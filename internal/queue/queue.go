@@ -1,9 +1,15 @@
 package queue
+
 import "quorum/internal/job"
 type Queue struct{
 	jobs []job.Job
 }
 
+func NewQueue() *Queue {
+	return &Queue{
+		jobs:make([]job.Job,0),
+	}
+}
 func (q *Queue) IsEmpty()(bool){
 	return len(q.jobs)==0
 }

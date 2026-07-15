@@ -6,7 +6,7 @@ import (
 	"quorum/internal/queue"
 )
 func main(){
-	q:=queue.Queue{};
+	q:=queue.NewQueue();
 	q.Enqueue(job.Job{
 		ID:1,
 		Type: "email",
