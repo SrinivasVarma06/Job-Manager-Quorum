@@ -1,8 +1,12 @@
 package queue
 
-import "quorum/internal/job"
+import (
+	"quorum/internal/job"
+	"sync"
+)
 type Queue struct{
 	jobs []job.Job
+	mu sync.Mutex
 }
 
 func NewQueue() *Queue {
@@ -13,11 +17,17 @@ func NewQueue() *Queue {
 func (q *Queue) IsEmpty()(bool){
 	return len(q.jobs)==0
 }
+
 func (q *Queue) Enqueue(j job.Job){
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
 	q.jobs=append(q.jobs,j)
 }
 
 func (q* Queue) Dequeue()(job.Job,bool){
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	if(q.IsEmpty()){
 		return job.Job{},false;
 	}

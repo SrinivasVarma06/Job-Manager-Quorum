@@ -1,9 +1,11 @@
-package main 
+package main
 
 import (
-	"fmt"
 	"quorum/internal/job"
 	"quorum/internal/queue"
+	"quorum/internal/scheduler"
+	"quorum/internal/worker"
+	"time"
 )
 func main(){
 	q:=queue.NewQueue();
@@ -17,10 +19,30 @@ func main(){
 		Type: "resize-image",
 		Priority: 5,
 	})
-	j,ok:=q.Dequeue();
-	if ok{
-		fmt.Println(j);
-	} else {
-		fmt.Println("Empty");
-	} 
+	q.Enqueue(job.Job{
+		ID:3,
+		Type: "play games",
+		Priority: 8,
+	})
+	q.Enqueue(job.Job{
+		ID:4,
+		Type: "draw arrows",
+		Priority: 3,
+	})
+	q.Enqueue(job.Job{
+		ID:5,
+		Type: "study",
+		Priority: 1,
+	})
+
+	w1:=worker.NewWorker(1)
+	w2:=worker.NewWorker(2)
+
+	go w1.Start()
+	go w2.Start()
+
+	s:=scheduler.NewScheduler(q, []*worker.Worker{w1,w2})
+	go s.Start()
+
+	time.Sleep(15*time.Second)
 }
