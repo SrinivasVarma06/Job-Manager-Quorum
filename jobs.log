@@ -1,3 +1,14 @@
-{"ID":1,"Type":"email","Priority":10,"Status":"PENDING"}
-{"ID":2,"Type":"play games","Priority":5,"Status":"PENDING"}
-{"ID":3,"Type":"study","Priority":1,"Status":"PENDING"}
+{"kind":"submit","job":{"ID":1,"Type":"email","Priority":10,"Status":"PENDING"}}
+{"kind":"submit","job":{"ID":2,"Type":"play games","Priority":5,"Status":"PENDING"}}
+{"kind":"submit","job":{"ID":3,"Type":"study","Priority":1,"Status":"PENDING"}}
+{"kind":"complete","job_id":1}
+{"kind":"complete","job_id":2}
+{"kind":"complete","job_id":3}
+{"kind":"submit","job":{"ID":1,"Type":"email","Priority":10,"Status":"PENDING"}}
+{"kind":"submit","job":{"ID":2,"Type":"play games","Priority":5,"Status":"PENDING"}}
+{"kind":"submit","job":{"ID":3,"Type":"study","Priority":1,"Status":"PENDING"}}
+{"kind":"submit","job":{"ID":4,"Type":"sleep","Priority":3,"Status":"PENDING"}}
+{"kind":"complete","job_id":2}
+{"kind":"complete","job_id":1}
+{"kind":"complete","job_id":4}
+{"kind":"complete","job_id":3}

@@ -1,14 +1,14 @@
 package queue
 
 import (
-	"sync"
 	"quorum/internal/job"
+	"sync"
 )
 
 type JobQueue struct {
 	Channel chan job.Job
 	Pending map[int]job.Job
-	mu sync.RWMutex
+	mu      sync.RWMutex
 }
 
 func NewJobQueue() *JobQueue {
