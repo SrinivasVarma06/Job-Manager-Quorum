@@ -10,6 +10,7 @@ import (
 	"quorum/internal/storage"
 	"quorum/internal/worker"
 	"quorum/internal/workermanager"
+	"quorum/internal/store"
 )
 
 type Engine struct {
@@ -20,15 +21,15 @@ type Engine struct {
 	Queue         *queue.JobQueue
 	WAL           *storage.WAL
 	Scheduler     *scheduler.Scheduler
-	Workers       []*worker.Worker
 	WorkerManager *workermanager.Manager
 	nextJobID atomic.Int64
+	JobStore *store.JobStore
 }
 
 func New() (*Engine, error) {
-
+	jobStore := store.NewJobStore()	
 	ctx, cancel := context.WithCancel(context.Background())
-	q := queue.NewJobQueue()
+	q := queue.NewJobQueue(jobStore)
 
 	wal, err := storage.NewWal("jobs.log")
 	if err != nil {
@@ -36,14 +37,12 @@ func New() (*Engine, error) {
 		return nil, err
 	}
 	wm := workermanager.NewManager()
-	s := scheduler.NewScheduler(q, wm.Available, wal)
+	s := scheduler.NewScheduler(q, wm.Available, wal, jobStore)
 
-	w1 := worker.NewWorker(1, wm.Available, s.CompletedJobs)
-	w2 := worker.NewWorker(2, wm.Available, s.CompletedJobs)
+	w1 := worker.NewWorker(1, wm.Available, s.Results, jobStore)
+	w2 := worker.NewWorker(2, wm.Available, s.Results, jobStore)
 	wm.Register(w1)
 	wm.Register(w2)
-
-	workers := []*worker.Worker{w1, w2}
 
 	e := &Engine{
 		ctx:           ctx,
@@ -51,15 +50,15 @@ func New() (*Engine, error) {
 		Queue:         q,
 		WAL:           wal,
 		Scheduler:     s,
-		Workers:       workers,
 		WorkerManager: wm,
+		JobStore: jobStore,
 	}
 
 	return e, nil
 }
 
 func (e *Engine) Start() {
-	for _, w := range e.Workers {
+	for _, w := range e.WorkerManager.List() {
 		e.wg.Add(1)
 		go func(wk *worker.Worker) {
 			defer e.wg.Done()
@@ -80,15 +79,13 @@ func (e *Engine) Stop() error {
 }
 
 func (e *Engine) Restore() error {
-
 	recoveredJobs, err := e.WAL.Replay()
 	if err != nil {
 		return err
 	}
-	
 	maxID := int64(0)
 	for _, j := range recoveredJobs {
-		e.Queue.Enqueue(j)
+		e.Queue.Enqueue(j.ID)
 		if int64(j.ID) > maxID {
 			maxID = int64(j.ID)
 		}
@@ -97,12 +94,29 @@ func (e *Engine) Restore() error {
 	return nil
 }
 
-func (e *Engine) SubmitJob(jobType string, priority int) error {
+func (e *Engine) SubmitJob(jobType string, priority int) (job.Job, error) {
 	id := int(e.nextJobID.Add(1))
 	j := job.NewJob(id, jobType, priority)
 	if err := e.WAL.Append(j); err != nil {
-		return err
+		return job.Job{},err
 	}
-	e.Queue.Enqueue(j)
-	return nil
+	e.JobStore.Add(j)
+	e.Queue.Enqueue(j.ID)
+	return j,nil
+}
+
+func (e *Engine) Jobs() []job.Job {
+	return e.JobStore.List()
+}
+
+func (e *Engine) Job(id int) (job.Job, bool) {
+	return e.JobStore.Get(id)
+}
+
+func (e *Engine) DeleteJob(id int) bool {
+	return e.JobStore.Delete(id)
+}
+
+func (e *Engine) CancelJob(id int) error {
+	return e.JobStore.Cancel(id)
 }
