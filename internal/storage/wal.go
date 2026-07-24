@@ -13,10 +13,20 @@ type WAL struct {
 	path string
 }
 
-type walRecord struct {
-	Kind  string   `json:"kind"`
-	Job   *job.Job `json:"job,omitempty"`
-	JobID int      `json:"job_id,omitempty"`
+type EventType string
+
+const (
+	EventSubmit   EventType = "submit"
+	EventRetry    EventType = "retry"
+	EventFailure  EventType = "failed"
+	EventComplete EventType = "complete"
+	EventCancel   EventType = "cancel"
+)
+
+type record struct {
+	Kind  EventType `json:"kind"`
+	Job   *job.Job  `json:"job,omitempty"`
+	JobID int       `json:"job_id,omitempty"`
 }
 
 func NewWal(path string) (*WAL, error) {
@@ -30,11 +40,7 @@ func NewWal(path string) (*WAL, error) {
 	}, nil
 }
 
-func (w *WAL) Append(j job.Job) error {
-	record := walRecord{
-		Kind: "submit",
-		Job:  &j,
-	}
+func (w *WAL) appendRecord(record record) error {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return err
@@ -44,18 +50,39 @@ func (w *WAL) Append(j job.Job) error {
 	return err
 }
 
+func (w *WAL) Append(j job.Job) error {
+	return w.appendRecord(record{
+		Kind: EventSubmit,
+		Job:  &j,
+	})
+}
+
+func (w *WAL) AppendRetry(j job.Job) error {
+	return w.appendRecord(record{
+		Kind: EventRetry,
+		Job:  &j,
+	})
+}
+
+func (w *WAL) AppendFailure(j job.Job) error {
+	return w.appendRecord(record{
+		Kind: EventFailure,
+		Job:  &j,
+	})
+}
+
 func (w *WAL) AppendCompletion(jobID int) error {
-	record := walRecord{
-		Kind:  "complete",
+	return w.appendRecord(record{
+		Kind:  EventComplete,
 		JobID: jobID,
-	}
-	data, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	_, err = w.file.Write(data)
-	return err
+	})
+}
+
+func (w *WAL) AppendCancel(jobID int) error {
+	return w.appendRecord(record{
+		Kind:  EventCancel,
+		JobID: jobID,
+	})
 }
 
 func (w *WAL) Replay() ([]job.Job, error) {
@@ -69,21 +96,28 @@ func (w *WAL) Replay() ([]job.Job, error) {
 	scanner := bufio.NewScanner(w.file)
 	for scanner.Scan() {
 		line := scanner.Bytes()
-
-		var record walRecord
-		if err := json.Unmarshal(line, &record); err == nil && record.Kind != "" {
-			switch record.Kind {
-			case "submit":
-				if record.Job != nil {
-					pending[record.Job.ID] = *record.Job
+		var r record
+		if err := json.Unmarshal(line, &r); err == nil && r.Kind != "" {
+			switch r.Kind {
+				case "submit":
+				if r.Job != nil {
+					pending[r.Job.ID] = *r.Job
 				}
-			case "complete":
-				delete(pending, record.JobID)
-			}
+				case "retry":
+				if r.Job != nil {
+					pending[r.Job.ID] = *r.Job
+				}
+				case "failed":
+					delete(pending, r.Job.ID)
+
+				case "cancel":
+					delete(pending, r.JobID)
+
+				case "complete":
+					delete(pending, r.JobID)
+				}
 			continue
 		}
-
-		// Backward compatibility for legacy WAL format where each line is a plain Job.
 		var legacyJob job.Job
 		if err := json.Unmarshal(line, &legacyJob); err != nil {
 			return nil, err

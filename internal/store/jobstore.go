@@ -1,18 +1,19 @@
 package store
+
 import (
-	"sync"
-	"quorum/internal/job"
 	"errors"
+	"quorum/internal/job"
+	"sync"
 )
 
 type JobStore struct {
-	mu sync.RWMutex
+	mu   sync.RWMutex
 	jobs map[int]job.Job
 }
 
-func NewJobStore() *JobStore{
+func NewJobStore() *JobStore {
 	return &JobStore{
-		jobs:make(map[int]job.Job),
+		jobs: make(map[int]job.Job),
 	}
 }
 

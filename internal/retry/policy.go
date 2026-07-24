@@ -2,7 +2,6 @@ package retry
 
 import (
 	"time"
-
 	"quorum/internal/job"
 )
 

@@ -2,15 +2,17 @@ package engine
 
 import (
 	"context"
-	"sync"
-	"sync/atomic"
 	"quorum/internal/job"
 	"quorum/internal/queue"
 	"quorum/internal/scheduler"
 	"quorum/internal/storage"
+	"quorum/internal/store"
 	"quorum/internal/worker"
 	"quorum/internal/workermanager"
-	"quorum/internal/store"
+	"quorum/internal/executor"
+	"sync"
+	"sync/atomic"
+	"quorum/internal/dlq"
 )
 
 type Engine struct {
@@ -18,18 +20,23 @@ type Engine struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	Queue         *queue.JobQueue
+	PriorityQueue *queue.JobQueue
+	DelayQueue    *queue.JobQueue
+
 	WAL           *storage.WAL
 	Scheduler     *scheduler.Scheduler
 	WorkerManager *workermanager.Manager
-	nextJobID atomic.Int64
-	JobStore *store.JobStore
+	nextJobID     atomic.Int64
+	JobStore      *store.JobStore
+	DLQ           *dlq.DeadLetterQueue
 }
 
 func New() (*Engine, error) {
-	jobStore := store.NewJobStore()	
+	jobStore := store.NewJobStore()
 	ctx, cancel := context.WithCancel(context.Background())
-	q := queue.NewJobQueue(jobStore)
+	priorityQueue := queue.NewJobQueue(jobStore, queue.PriorityComparator)
+	delayQueue := queue.NewJobQueue(jobStore, queue.DelayComparator)
+	dead:=dlq.New()
 
 	wal, err := storage.NewWal("jobs.log")
 	if err != nil {
@@ -37,21 +44,23 @@ func New() (*Engine, error) {
 		return nil, err
 	}
 	wm := workermanager.NewManager()
-	s := scheduler.NewScheduler(q, wm.Available, wal, jobStore)
+	s := scheduler.NewScheduler(priorityQueue, delayQueue, wm.Available, wal, jobStore, dead)
 
-	w1 := worker.NewWorker(1, wm.Available, s.Results, jobStore)
-	w2 := worker.NewWorker(2, wm.Available, s.Results, jobStore)
+	w1 := worker.NewWorker(1, wm.Available, s.Results, jobStore,&executor.MockExecutor{})
+	w2 := worker.NewWorker(2, wm.Available, s.Results, jobStore,&executor.MockExecutor{})
 	wm.Register(w1)
 	wm.Register(w2)
 
 	e := &Engine{
 		ctx:           ctx,
 		cancel:        cancel,
-		Queue:         q,
+		PriorityQueue: priorityQueue,
+		DelayQueue:    delayQueue,
 		WAL:           wal,
 		Scheduler:     s,
 		WorkerManager: wm,
-		JobStore: jobStore,
+		JobStore:      jobStore,
+		DLQ:           dead,
 	}
 
 	return e, nil
@@ -85,7 +94,9 @@ func (e *Engine) Restore() error {
 	}
 	maxID := int64(0)
 	for _, j := range recoveredJobs {
-		e.Queue.Enqueue(j.ID)
+		e.JobStore.Add(j)
+		e.PriorityQueue.Enqueue(j.ID)
+
 		if int64(j.ID) > maxID {
 			maxID = int64(j.ID)
 		}
@@ -98,11 +109,11 @@ func (e *Engine) SubmitJob(jobType string, priority int) (job.Job, error) {
 	id := int(e.nextJobID.Add(1))
 	j := job.NewJob(id, jobType, priority)
 	if err := e.WAL.Append(j); err != nil {
-		return job.Job{},err
+		return job.Job{}, err
 	}
 	e.JobStore.Add(j)
-	e.Queue.Enqueue(j.ID)
-	return j,nil
+	e.PriorityQueue.Enqueue(j.ID)
+	return j, nil
 }
 
 func (e *Engine) Jobs() []job.Job {
@@ -119,4 +130,8 @@ func (e *Engine) DeleteJob(id int) bool {
 
 func (e *Engine) CancelJob(id int) error {
 	return e.JobStore.Cancel(id)
+}
+
+func (e *Engine) DeadJobs() []job.Job {
+	return e.DLQ.List()
 }

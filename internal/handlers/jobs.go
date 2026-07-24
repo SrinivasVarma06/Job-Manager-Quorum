@@ -3,8 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"quorum/internal/engine"
+	"strconv"
 )
 
 type SubmitJobRequest struct {
@@ -79,12 +79,12 @@ func ListJobsHandler(e *engine.Engine) http.HandlerFunc {
 func GetJobHandler(e *engine.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		idStr := r.PathValue("id")
-		id,err:=strconv.Atoi(idStr)
+		id, err := strconv.Atoi(idStr)
 		if err != nil {
 			http.Error(w, "Invalid job ID", http.StatusBadRequest)
 			return
 		}
-		j,ok:=e.Job(id)
+		j, ok := e.Job(id)
 		if !ok {
 			http.Error(w, "Job not found", http.StatusNotFound)
 			return

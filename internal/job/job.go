@@ -3,11 +3,12 @@ package job
 import (
 	"time"
 )
+
 type Job struct {
-	ID       int
-	Type     string
-	Priority int
-	Status   Status
+	ID         int
+	Type       string
+	Priority   int
+	Status     Status
 	RetryCount int
 	MaxRetries int
 	NextRunAt  time.Time
@@ -27,10 +28,10 @@ const (
 
 func NewJob(id int, jobType string, priority int) Job {
 	return Job{
-		ID:       id,
-		Type:     jobType,
-		Priority: priority,
-		Status:   Pending,
+		ID:         id,
+		Type:       jobType,
+		Priority:   priority,
+		Status:     Pending,
 		MaxRetries: 3,
 	}
 }
