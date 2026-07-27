@@ -3,28 +3,41 @@ package worker
 import (
 	"context"
 	"fmt"
+	"quorum/internal/executor"
 	"quorum/internal/job"
 	"quorum/internal/store"
-	"quorum/internal/executor"
 )
 
 type Worker struct {
-	ID         int
+	id         int
 	JobChannel chan job.Job
-	Available  chan *Worker
+	Available  chan WorkerClient
 	Results    chan job.Result
 	Store      *store.JobStore
 	Executor   executor.Executor
 }
 
-func NewWorker(id int, available chan *Worker, results chan job.Result, store *store.JobStore, exec executor.Executor) *Worker {
+func NewWorker(id int, available chan WorkerClient, results chan job.Result, store *store.JobStore, exec executor.Executor) *Worker {
 	return &Worker{
-		ID:         id,
+		id:         id,
 		JobChannel: make(chan job.Job),
 		Available:  available,
 		Results:    results,
 		Store:      store,
 		Executor:   exec,
+	}
+}
+
+func (w *Worker) ID() int {
+	return w.id
+}
+
+func (w *Worker) Submit(j job.Job) bool {
+	select {
+	case w.JobChannel <- j:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -37,8 +50,8 @@ func (w *Worker) Start(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case job := <-w.JobChannel:
-				w.Execute(job)
+			case j := <-w.JobChannel:
+				w.Execute(j)
 			}
 		}
 	}
@@ -47,14 +60,14 @@ func (w *Worker) Start(ctx context.Context) {
 func (w *Worker) Execute(j job.Job) {
 	j.Status = job.Running
 	w.Store.Update(j)
-	fmt.Printf("Worker %d is processing Job %d\n", w.ID, j.ID)
+	fmt.Printf("Worker %d is processing Job %d\n", w.id, j.ID)
 
 	err := w.Executor.Execute(j)
 	if err != nil {
 		j.Status = job.Failed
 		j.LastError = err.Error()
 		w.Store.Update(j)
-		fmt.Printf("Worker %d failed Job %d: %v\n", w.ID, j.ID, err)
+		fmt.Printf("Worker %d failed Job %d: %v\n", w.id, j.ID, err)
 		w.Results <- job.Result{
 			JobID:   j.ID,
 			Success: false,
@@ -65,7 +78,7 @@ func (w *Worker) Execute(j job.Job) {
 
 	j.Status = job.Completed
 	w.Store.Update(j)
-	fmt.Printf("Worker %d completed Job %d\n", w.ID, j.ID)
+	fmt.Printf("Worker %d completed Job %d\n", w.id, j.ID)
 	w.Results <- job.Result{
 		JobID:   j.ID,
 		Success: true,

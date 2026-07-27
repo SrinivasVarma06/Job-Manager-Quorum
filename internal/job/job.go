@@ -19,6 +19,7 @@ type Status string
 
 const (
 	Pending   Status = "PENDING"
+	Scheduled Status = "SCHEDULED"
 	Running   Status = "RUNNING"
 	Completed Status = "COMPLETED"
 	Failed    Status = "FAILED"

@@ -30,6 +30,8 @@ func main() {
 	mux.HandleFunc("/jobs", handlers.JobsHandler(e))
 	mux.HandleFunc("GET /jobs/{id}", handlers.GetJobHandler(e))
 	mux.HandleFunc("DELETE /jobs/{id}", handlers.CancelJobHandler(e))
+	mux.HandleFunc("/cron", handlers.CronJobsHandler(e))
+	mux.HandleFunc("DELETE /cron/{id}", handlers.DeleteCronJobHandler(e))
 
 	handler := middleware.RequestID(
 		middleware.Logging(mux),

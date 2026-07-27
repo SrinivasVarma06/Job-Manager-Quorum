@@ -2,32 +2,33 @@ package scheduler
 
 import (
 	"context"
-	"time"
+	"quorum/internal/config"
+	"quorum/internal/dlq"
 	"quorum/internal/job"
 	"quorum/internal/queue"
+	"quorum/internal/retry"
 	"quorum/internal/storage"
 	"quorum/internal/store"
 	"quorum/internal/worker"
-	"quorum/internal/retry"
-	"quorum/internal/dlq"
+	"time"
 )
 
 type Scheduler struct {
 	PriorityQueue *queue.JobQueue
 	DelayQueue    *queue.JobQueue
-	Available     chan *worker.Worker
+	Available     chan worker.WorkerClient
 	Results       chan job.Result
 	WAL           *storage.WAL
 	Store         *store.JobStore
 	DLQ		   *dlq.DeadLetterQueue
 }
 
-func NewScheduler(priorityQueue *queue.JobQueue, delayQueue *queue.JobQueue, available chan *worker.Worker, wal *storage.WAL, store *store.JobStore, dlq *dlq.DeadLetterQueue) *Scheduler {
+func NewScheduler(priorityQueue *queue.JobQueue, delayQueue *queue.JobQueue, available chan worker.WorkerClient, wal *storage.WAL, store *store.JobStore, dlq *dlq.DeadLetterQueue, resultBuffer int) *Scheduler {
 	return &Scheduler{
 		PriorityQueue: priorityQueue,
 		DelayQueue:    delayQueue,
 		Available:     available,
-		Results:       make(chan job.Result,100),
+		Results:       make(chan job.Result, resultBuffer),
 		WAL:           wal,
 		Store:         store,
 		DLQ:           dlq,
@@ -38,13 +39,12 @@ func (s *Scheduler) Dispatch(ctx context.Context, j job.Job) bool {
 	select {
 	case <-ctx.Done():
 		return false
-	case worker := <-s.Available:
+	case w := <-s.Available:
 		select {
 		case <-ctx.Done():
 			return false
-
-		case worker.JobChannel <- j:
-			return true
+		default:
+			return w.Submit(j)
 		}
 	}
 }
@@ -139,11 +139,10 @@ func (s *Scheduler) resultLoop(ctx context.Context) {
 			}
 
 			if retry.ShouldRetry(j) {
-
 				j.RetryCount++
 				j.Status = job.Retrying
 				j.LastError = result.Error.Error()
-				j.NextRunAt = retry.NextRetryTime(j)
+				j.NextRunAt = retry.NextRetryTime(j, config.Default().MaxBackoff)
 
 				s.Store.Update(j)
 

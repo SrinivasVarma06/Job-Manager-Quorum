@@ -6,22 +6,22 @@ import (
 )
 
 type Manager struct {
-	workers   map[int]*worker.Worker
-	Available chan *worker.Worker
+	workers   map[int]worker.WorkerClient
+	Available chan worker.WorkerClient
 	mu        sync.RWMutex
 }
 
 func NewManager() *Manager {
 	return &Manager{
-		workers:   make(map[int]*worker.Worker),
-		Available: make(chan *worker.Worker, 100),
+		workers:   make(map[int]worker.WorkerClient),
+		Available: make(chan worker.WorkerClient, 100),
 	}
 }
 
-func (m *Manager) Register(w *worker.Worker) {
+func (m *Manager) Register(w worker.WorkerClient) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.workers[w.ID] = w
+	m.workers[w.ID()] = w	
 }
 
 func (m *Manager) Remove(id int) {
@@ -30,7 +30,7 @@ func (m *Manager) Remove(id int) {
 	delete(m.workers, id)
 }
 
-func (m *Manager) Get(id int) (*worker.Worker, bool) {
+func (m *Manager) Get(id int) (worker.WorkerClient, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	w, ok := m.workers[id]
@@ -43,15 +43,12 @@ func (m *Manager) Count() int {
 	return len(m.workers)
 }
 
-func (m *Manager) List() []*worker.Worker {
+func (m *Manager) List() []worker.WorkerClient {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	workers := make([]*worker.Worker, 0, len(m.workers))
-
+	workers := make([]worker.WorkerClient, 0, len(m.workers))
 	for _, w := range m.workers {
 		workers = append(workers, w)
 	}
-
 	return workers
 }
