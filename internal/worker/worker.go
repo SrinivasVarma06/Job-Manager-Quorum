@@ -6,6 +6,7 @@ import (
 	"quorum/internal/executor"
 	"quorum/internal/job"
 	"quorum/internal/store"
+	"errors"
 )
 
 type Worker struct {
@@ -32,12 +33,18 @@ func (w *Worker) ID() int {
 	return w.id
 }
 
-func (w *Worker) Submit(j job.Job) bool {
+var ErrWorkerBusy = errors.New("worker is busy")
+
+func (w *Worker) Submit(ctx context.Context, j job.Job) error {
 	select {
+	case <-ctx.Done():
+		return ctx.Err()
+
 	case w.JobChannel <- j:
-		return true
+		return nil
+
 	default:
-		return false
+		return ErrWorkerBusy
 	}
 }
 
@@ -58,10 +65,7 @@ func (w *Worker) Start(ctx context.Context) {
 }
 
 func (w *Worker) Execute(j job.Job) {
-	j.Status = job.Running
-	w.Store.Update(j)
 	fmt.Printf("Worker %d is processing Job %d\n", w.id, j.ID)
-
 	err := w.Executor.Execute(j)
 	if err != nil {
 		j.Status = job.Failed

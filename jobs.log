@@ -12,3 +12,9 @@
 {"kind":"retry","job":{"ID":4,"Type":"email","Priority":5,"Status":"RETRYING","RetryCount":3,"MaxRetries":3,"NextRunAt":"2026-07-23T17:01:15.5388351+05:30","LastError":"simulated failure"}}
 {"kind":"failed","job":{"ID":2,"Type":"email","Priority":5,"Status":"FAILED","RetryCount":3,"MaxRetries":3,"NextRunAt":"2026-07-23T17:01:05.5380879+05:30","LastError":"simulated failure"}}
 {"kind":"failed","job":{"ID":4,"Type":"email","Priority":5,"Status":"FAILED","RetryCount":3,"MaxRetries":3,"NextRunAt":"2026-07-23T17:01:15.5388351+05:30","LastError":"simulated failure"}}
+{"kind":"failed","job":{"ID":2,"Type":"play games","Priority":5,"Status":"FAILED","RetryCount":0,"MaxRetries":0,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"simulated failure"}}
+{"kind":"complete","job_id":1}
+{"kind":"complete","job_id":3}
+{"kind":"failed","job":{"ID":2,"Type":"play games","Priority":5,"Status":"FAILED","RetryCount":0,"MaxRetries":0,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"simulated failure"}}
+{"kind":"complete","job_id":1}
+{"kind":"complete","job_id":3}

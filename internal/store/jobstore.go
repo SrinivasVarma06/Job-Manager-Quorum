@@ -89,3 +89,17 @@ func (s *JobStore) Cancel(id int) error {
 
 	return nil
 }
+
+func (s *JobStore) RunningJobs(workerID int) []job.Job {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var jobs []job.Job
+
+	for _, j := range s.jobs {
+		if j.WorkerID == workerID &&
+			j.Status == job.Running {
+			jobs = append(jobs, j)
+		}
+	}
+	return jobs
+}

@@ -8,5 +8,5 @@ import (
 type WorkerClient interface {
 	ID() int
 	Start(ctx context.Context)
-	Submit(j job.Job) bool
+	Submit(ctx context.Context, j job.Job) error
 }

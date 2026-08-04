@@ -21,9 +21,18 @@ type Scheduler struct {
 	WAL           *storage.WAL
 	Store         *store.JobStore
 	DLQ		   *dlq.DeadLetterQueue
+	DeadWorkers <-chan int
 }
 
-func NewScheduler(priorityQueue *queue.JobQueue, delayQueue *queue.JobQueue, available chan worker.WorkerClient, wal *storage.WAL, store *store.JobStore, dlq *dlq.DeadLetterQueue, resultBuffer int) *Scheduler {
+func NewScheduler(
+	priorityQueue *queue.JobQueue, 
+	delayQueue *queue.JobQueue, 
+	available chan worker.WorkerClient, 
+	wal *storage.WAL, store *store.JobStore, 
+	dlq *dlq.DeadLetterQueue, 
+	deadWorkers <-chan int,
+	resultBuffer int,
+	) *Scheduler {
 	return &Scheduler{
 		PriorityQueue: priorityQueue,
 		DelayQueue:    delayQueue,
@@ -32,6 +41,7 @@ func NewScheduler(priorityQueue *queue.JobQueue, delayQueue *queue.JobQueue, ava
 		WAL:           wal,
 		Store:         store,
 		DLQ:           dlq,
+		DeadWorkers:   deadWorkers,
 	}
 }
 
@@ -40,11 +50,19 @@ func (s *Scheduler) Dispatch(ctx context.Context, j job.Job) bool {
 	case <-ctx.Done():
 		return false
 	case w := <-s.Available:
+		j.WorkerID = w.ID()
+		j.Status = job.Running
+		s.Store.Update(j)
+
 		select {
 		case <-ctx.Done():
 			return false
 		default:
-			return w.Submit(j)
+			err := w.Submit(ctx, j)
+			if err != nil {
+				return false
+			}
+			return true
 		}
 	}
 }
@@ -53,6 +71,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 	go s.dispatchLoop(ctx)
 	go s.resultLoop(ctx)
 	go s.delayLoop(ctx)
+	go s.recoveryLoop(ctx)
 	<-ctx.Done()
 }
 
@@ -130,11 +149,9 @@ func (s *Scheduler) resultLoop(ctx context.Context) {
 			}
 
 			if result.Success {
-
 				if err := s.WAL.AppendCompletion(result.JobID); err != nil {
 					panic(err)
 				}
-
 				continue
 			}
 
@@ -183,9 +200,7 @@ func (s *Scheduler) delayLoop(ctx context.Context) {
 			s.DelayQueue.Dequeue()
 			continue
 		}
-
 		wait := time.Until(j.NextRunAt)
-
 		if wait <= 0 {
 			s.ProcessDelayedJobs()
 			continue
@@ -194,7 +209,6 @@ func (s *Scheduler) delayLoop(ctx context.Context) {
 		timer := time.NewTimer(wait)
 
 		select {
-
 		case <-ctx.Done():
 			timer.Stop()
 			return
@@ -204,6 +218,23 @@ func (s *Scheduler) delayLoop(ctx context.Context) {
 
 		case <-s.DelayQueue.Wait():
 			timer.Stop()
+		}
+	}
+}
+
+func (s *Scheduler) recoveryLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case workerID := <-s.DeadWorkers:
+			jobs := s.Store.RunningJobs(workerID)
+			for _, j := range jobs {
+				j.Status = job.Pending
+				j.WorkerID = 0
+				s.Store.Update(j)
+				s.PriorityQueue.Enqueue(j.ID)
+			}
 		}
 	}
 }

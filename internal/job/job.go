@@ -13,6 +13,7 @@ type Job struct {
 	MaxRetries int
 	NextRunAt  time.Time
 	LastError  string
+	WorkerID int
 }
 
 type Status string

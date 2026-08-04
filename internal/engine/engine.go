@@ -14,6 +14,8 @@ import (
 	"quorum/internal/store"
 	"quorum/internal/worker"
 	"quorum/internal/workermanager"
+	"quorum/internal/rpc/server"
+	"quorum/internal/rpc/client"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +38,7 @@ type Engine struct {
 	JobStore      *store.JobStore
 	DLQ           *dlq.DeadLetterQueue
 	Config        config.Config
+	RemoteClients []*client.Client
 }
 
 func New() (*Engine, error) {
@@ -53,7 +56,7 @@ func New() (*Engine, error) {
 	}
 	snapshot := storage.NewSnapshot("snapshot.json")
 	wm := workermanager.NewManager()
-	s := scheduler.NewScheduler(priorityQueue, delayQueue, wm.Available, wal, jobStore, dead, cfg.ResultBuffer)
+	s := scheduler.NewScheduler(priorityQueue, delayQueue, wm.Available, wal, jobStore, dead, wm.DeadWorkers,cfg.ResultBuffer)
 
 	limiter := executor.NewTokenBucketLimiter(
 		cfg.RateLimit,
@@ -80,7 +83,18 @@ func New() (*Engine, error) {
 		)
 		wm.Register(w)
 	}
-
+	remoteWorker, err := client.New(
+		100,
+		"localhost:50051",
+	)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	remoteClients := []*client.Client{
+		remoteWorker,
+	}
+	wm.Register(remoteWorker)
 	e := &Engine{
 		ctx:           ctx,
 		cancel:        cancel,
@@ -93,6 +107,7 @@ func New() (*Engine, error) {
 		JobStore:      jobStore,
 		DLQ:           dead,
 		Config:        cfg,
+		RemoteClients: remoteClients,
 	}
 	e.CronScheduler = cron.New(func(jobType string, priority int) error {
 		_, submitErr := e.SubmitJob(jobType, priority)
@@ -120,12 +135,31 @@ func (e *Engine) Start() {
 		defer e.wg.Done()
 		e.CronScheduler.Start(e.ctx)
 	}()
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		workers := e.WorkerManager.List()
+		if len(workers) == 0 {
+			fmt.Println("No workers registered")
+			return
+		}
+		grpcWorker := server.NewWorkerServer(
+			e.WorkerManager,
+		)
+		if err := server.StartGRPCServer(50051, grpcWorker); err != nil {
+			fmt.Println(err)
+		}
+	}()
 }
 
 func (e *Engine) Stop() error {
 	e.cancel()
 	e.wg.Wait()
-
+	for _, c := range e.RemoteClients {
+		if err := c.Close(); err != nil {
+			fmt.Println("failed to close gRPC client:", err)
+		}
+	}
 	compactErr := e.Scheduler.CreateSnapshot(e.Snapshot, e.WAL)
 	closeErr := e.WAL.Close()
 

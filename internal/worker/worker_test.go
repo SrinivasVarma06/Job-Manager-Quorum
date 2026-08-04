@@ -25,11 +25,10 @@ func TestWorkerClientInterface(t *testing.T) {
 	available := make(chan worker.WorkerClient, 5)
 	results := make(chan job.Result, 5)
 	jobStore := store.NewJobStore()
-	exec := &mockExecutor{fail: false}
+	exec := &mockExecutor{}
 
 	w := worker.NewWorker(1, available, results, jobStore, exec)
 
-	// Verify Worker satisfies worker.Client interface
 	var _ worker.WorkerClient = w
 
 	if w.ID() != 1 {
@@ -41,7 +40,6 @@ func TestWorkerClientInterface(t *testing.T) {
 
 	go w.Start(ctx)
 
-	// Wait for worker to signal availability
 	select {
 	case client := <-available:
 		if client.ID() != 1 {
@@ -51,25 +49,25 @@ func TestWorkerClientInterface(t *testing.T) {
 		j := job.NewJob(100, "email", 1)
 		jobStore.Add(j)
 
-		ok := client.Submit(j)
-		if !ok {
-			t.Fatalf("expected Submit to return true")
+		if err := client.Submit(ctx, j); err != nil {
+			t.Fatalf("submit failed: %v", err)
 		}
 
 		select {
 		case res := <-results:
 			if res.JobID != 100 {
-				t.Fatalf("expected result JobID 100, got %d", res.JobID)
+				t.Fatalf("expected JobID 100, got %d", res.JobID)
 			}
 			if !res.Success {
-				t.Fatalf("expected job execution success")
+				t.Fatalf("expected execution success")
 			}
+
 		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for execution result")
+			t.Fatal("timed out waiting for result")
 		}
 
 	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting for worker availability")
+		t.Fatal("timed out waiting for worker availability")
 	}
 }
 
@@ -91,24 +89,27 @@ func TestWorkerClientFailureHandling(t *testing.T) {
 		j := job.NewJob(101, "email", 1)
 		jobStore.Add(j)
 
-		client.Submit(j)
+		if err := client.Submit(ctx, j); err != nil {
+			t.Fatalf("submit failed: %v", err)
+		}
 
 		select {
 		case res := <-results:
 			if res.JobID != 101 {
-				t.Fatalf("expected result JobID 101, got %d", res.JobID)
+				t.Fatalf("expected JobID 101, got %d", res.JobID)
 			}
 			if res.Success {
-				t.Fatalf("expected job execution failure")
+				t.Fatal("expected execution failure")
 			}
 			if res.Error == nil {
-				t.Fatalf("expected non-nil error")
+				t.Fatal("expected non-nil error")
 			}
+
 		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out waiting for execution result")
+			t.Fatal("timed out waiting for result")
 		}
 
 	case <-time.After(2 * time.Second):
-		t.Fatalf("timed out waiting for worker availability")
+		t.Fatal("timed out waiting for worker availability")
 	}
 }

@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package worker;
+
+option go_package = "quorum/internal/rpc/proto;workerpb";
+
+service WorkerService {
+
+  rpc RegisterWorker(RegisterWorkerRequest)
+    returns (RegisterWorkerResponse);
+
+  rpc SubmitJob(SubmitJobRequest)
+    returns (SubmitJobResponse);
+
+  rpc Heartbeat(HeartbeatRequest)
+    returns (HeartbeatResponse);
+}
+
+message RegisterWorkerRequest {
+  int32 worker_id = 1;
+  string address = 2;
+}
+
+message RegisterWorkerResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+message SubmitJobRequest {
+  int64 id = 1;
+  string type = 2;
+  int32 priority = 3;
+}
+
+message SubmitJobResponse {
+  bool accepted = 1;
+  string error = 2;
+}
+
+message HeartbeatRequest {
+  int32 worker_id = 1;
+}
+
+message HeartbeatResponse {
+  bool success = 1;
+}
