@@ -30,6 +30,7 @@ message SubmitJobRequest {
   int64 id = 1;
   string type = 2;
   int32 priority = 3;
+  int32 worker_id = 4;
 }
 
 message SubmitJobResponse {

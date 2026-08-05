@@ -18,3 +18,6 @@
 {"kind":"failed","job":{"ID":2,"Type":"play games","Priority":5,"Status":"FAILED","RetryCount":0,"MaxRetries":0,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"simulated failure"}}
 {"kind":"complete","job_id":1}
 {"kind":"complete","job_id":3}
+{"kind":"complete","job_id":1}
+{"kind":"failed","job":{"ID":2,"Type":"play games","Priority":5,"Status":"FAILED","RetryCount":0,"MaxRetries":0,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"simulated failure","WorkerID":2}}
+{"kind":"complete","job_id":3}

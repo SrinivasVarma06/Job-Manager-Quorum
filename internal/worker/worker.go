@@ -2,11 +2,11 @@ package worker
 
 import (
 	"context"
-	"fmt"
 	"quorum/internal/executor"
 	"quorum/internal/job"
 	"quorum/internal/store"
 	"errors"
+	"quorum/internal/runner"
 )
 
 type Worker struct {
@@ -15,7 +15,7 @@ type Worker struct {
 	Available  chan WorkerClient
 	Results    chan job.Result
 	Store      *store.JobStore
-	Executor   executor.Executor
+	Runner     *runner.Runner
 }
 
 func NewWorker(id int, available chan WorkerClient, results chan job.Result, store *store.JobStore, exec executor.Executor) *Worker {
@@ -25,7 +25,11 @@ func NewWorker(id int, available chan WorkerClient, results chan job.Result, sto
 		Available:  available,
 		Results:    results,
 		Store:      store,
-		Executor:   exec,
+		Runner: runner.New(
+			store,
+			results,
+			exec,
+		),
 	}
 }
 
@@ -58,33 +62,8 @@ func (w *Worker) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case j := <-w.JobChannel:
-				w.Execute(j)
+				w.Runner.Execute(w.id, j)
 			}
 		}
-	}
-}
-
-func (w *Worker) Execute(j job.Job) {
-	fmt.Printf("Worker %d is processing Job %d\n", w.id, j.ID)
-	err := w.Executor.Execute(j)
-	if err != nil {
-		j.Status = job.Failed
-		j.LastError = err.Error()
-		w.Store.Update(j)
-		fmt.Printf("Worker %d failed Job %d: %v\n", w.id, j.ID, err)
-		w.Results <- job.Result{
-			JobID:   j.ID,
-			Success: false,
-			Error:   err,
-		}
-		return
-	}
-
-	j.Status = job.Completed
-	w.Store.Update(j)
-	fmt.Printf("Worker %d completed Job %d\n", w.id, j.ID)
-	w.Results <- job.Result{
-		JobID:   j.ID,
-		Success: true,
 	}
 }

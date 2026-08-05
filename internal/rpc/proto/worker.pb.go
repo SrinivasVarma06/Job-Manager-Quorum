@@ -130,6 +130,7 @@ type SubmitJobRequest struct {
 	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
 	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
 	Priority      int32                  `protobuf:"varint,3,opt,name=priority,proto3" json:"priority,omitempty"`
+	WorkerId      int32                  `protobuf:"varint,4,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -181,6 +182,13 @@ func (x *SubmitJobRequest) GetType() string {
 func (x *SubmitJobRequest) GetPriority() int32 {
 	if x != nil {
 		return x.Priority
+	}
+	return 0
+}
+
+func (x *SubmitJobRequest) GetWorkerId() int32 {
+	if x != nil {
+		return x.WorkerId
 	}
 	return 0
 }
@@ -335,11 +343,12 @@ const file_internal_rpc_proto_worker_proto_rawDesc = "" +
 	"\aaddress\x18\x02 \x01(\tR\aaddress\"H\n" +
 	"\x16RegisterWorkerResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"R\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"o\n" +
 	"\x10SubmitJobRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +
-	"\bpriority\x18\x03 \x01(\x05R\bpriority\"E\n" +
+	"\bpriority\x18\x03 \x01(\x05R\bpriority\x12\x1b\n" +
+	"\tworker_id\x18\x04 \x01(\x05R\bworkerId\"E\n" +
 	"\x11SubmitJobResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"/\n" +

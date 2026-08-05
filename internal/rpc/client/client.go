@@ -77,6 +77,7 @@ func (c *Client) Submit(ctx context.Context, j job.Job) error {
 		Id:       int64(j.ID),
 		Type:     j.Type,
 		Priority: int32(j.Priority),
+		WorkerId: int32(c.id),
 	}
 
 	resp, err := c.client.SubmitJob(ctx, req)

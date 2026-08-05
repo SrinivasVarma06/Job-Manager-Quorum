@@ -16,6 +16,7 @@ import (
 	"quorum/internal/workermanager"
 	"quorum/internal/rpc/server"
 	"quorum/internal/rpc/client"
+	"quorum/internal/runner"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -143,8 +144,27 @@ func (e *Engine) Start() {
 			fmt.Println("No workers registered")
 			return
 		}
+		baseExecutor := &executor.MockExecutor{}
+		rateLimited := executor.NewRateLimitedExecutor(
+			baseExecutor,
+			executor.NewTokenBucketLimiter(
+				e.Config.RateLimit,
+				e.Config.RateBurst,
+			),
+		)
+		exec := executor.NewCircuitBreakerExecutor(
+			rateLimited,
+			e.Config.BreakerFailureThreshold,
+			e.Config.BreakerResetTimeout,
+		)
+		remoteRunner := runner.New(
+			e.JobStore,
+			e.Scheduler.Results,
+			exec,
+		)
 		grpcWorker := server.NewWorkerServer(
 			e.WorkerManager,
+			remoteRunner,
 		)
 		if err := server.StartGRPCServer(50051, grpcWorker); err != nil {
 			fmt.Println(err)
