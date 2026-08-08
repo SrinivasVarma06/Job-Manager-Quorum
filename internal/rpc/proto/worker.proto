@@ -14,11 +14,15 @@ service WorkerService {
 
   rpc Heartbeat(HeartbeatRequest)
     returns (HeartbeatResponse);
+
+  rpc ReportResult(ReportResultRequest)
+    returns (ReportResultResponse);
 }
 
 message RegisterWorkerRequest {
   int32 worker_id = 1;
   string address = 2;
+  repeated string topics = 3;
 }
 
 message RegisterWorkerResponse {
@@ -44,4 +48,15 @@ message HeartbeatRequest {
 
 message HeartbeatResponse {
   bool success = 1;
+}
+
+message ReportResultRequest {
+  int64  job_id    = 1;
+  bool   success   = 2;
+  string error     = 3;
+  int32  worker_id = 4;
+}
+
+message ReportResultResponse {
+  bool acknowledged = 1;
 }

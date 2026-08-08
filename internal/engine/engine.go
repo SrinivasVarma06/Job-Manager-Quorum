@@ -3,7 +3,14 @@ package engine
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"quorum/internal/config"
+	"quorum/internal/consensus"
 	"quorum/internal/cron"
 	"quorum/internal/dlq"
 	"quorum/internal/executor"
@@ -14,12 +21,6 @@ import (
 	"quorum/internal/store"
 	"quorum/internal/worker"
 	"quorum/internal/workermanager"
-	"quorum/internal/rpc/server"
-	"quorum/internal/rpc/client"
-	"quorum/internal/runner"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 type Engine struct {
@@ -36,28 +37,52 @@ type Engine struct {
 	CronScheduler *cron.Scheduler
 	WorkerManager *workermanager.Manager
 	nextJobID     atomic.Int64
-	JobStore      *store.JobStore
+	JobStore      store.Store
 	DLQ           *dlq.DeadLetterQueue
 	Config        config.Config
-	RemoteClients []*client.Client
+	RaftNode      *consensus.RaftNode
 }
 
-func New() (*Engine, error) {
-	jobStore := store.NewJobStore()
+func New(cfg config.Config) (*Engine, error) {
+
+	var jobStore store.Store
+	if cfg.StorageType == "bolt" {
+		bs, err := store.NewBoltStore(cfg.StoragePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize bolt store: %w", err)
+		}
+		jobStore = bs
+	} else {
+		jobStore = store.NewMemoryStore()
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	priorityQueue := queue.NewJobQueue(jobStore, queue.PriorityComparator)
 	delayQueue := queue.NewJobQueue(jobStore, queue.DelayComparator)
 	dead := dlq.New()
-	cfg := config.Default()
 
 	wal, err := storage.NewWal("jobs.log")
 	if err != nil {
 		cancel()
+		if closer, ok := jobStore.(io.Closer); ok {
+			_ = closer.Close()
+		}
 		return nil, err
 	}
 	snapshot := storage.NewSnapshot("snapshot.json")
 	wm := workermanager.NewManager()
-	s := scheduler.NewScheduler(priorityQueue, delayQueue, wm.Available, wal, jobStore, dead, wm.DeadWorkers,cfg.ResultBuffer)
+	s := scheduler.NewScheduler(priorityQueue, delayQueue, wm.Available, wal, jobStore, dead, wm.DeadWorkers, cfg.ResultBuffer, wm.Broker)
+
+	var raftNode *consensus.RaftNode
+	if cfg.RaftEnabled {
+		fsm := consensus.NewFSM(jobStore)
+		rn, err := consensus.NewRaftNode(cfg.RaftNodeID, cfg.RaftAddr, fsm, cfg.RaftDataDir)
+		if err != nil {
+			slog.Warn("Failed to initialize Raft consensus, continuing without Raft", "error", err)
+		} else {
+			raftNode = rn
+		}
+	}
 
 	limiter := executor.NewTokenBucketLimiter(
 		cfg.RateLimit,
@@ -82,20 +107,9 @@ func New() (*Engine, error) {
 			jobStore,
 			exec,
 		)
-		wm.Register(w)
+		wm.Register(w, fmt.Sprintf("localhost:local-%d", i), "*")
 	}
-	remoteWorker, err := client.New(
-		100,
-		"localhost:50051",
-	)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	remoteClients := []*client.Client{
-		remoteWorker,
-	}
-	wm.Register(remoteWorker)
+
 	e := &Engine{
 		ctx:           ctx,
 		cancel:        cancel,
@@ -108,7 +122,7 @@ func New() (*Engine, error) {
 		JobStore:      jobStore,
 		DLQ:           dead,
 		Config:        cfg,
-		RemoteClients: remoteClients,
+		RaftNode:      raftNode,
 	}
 	e.CronScheduler = cron.New(func(jobType string, priority int) error {
 		_, submitErr := e.SubmitJob(jobType, priority)
@@ -136,52 +150,28 @@ func (e *Engine) Start() {
 		defer e.wg.Done()
 		e.CronScheduler.Start(e.ctx)
 	}()
-	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
-		workers := e.WorkerManager.List()
-		if len(workers) == 0 {
-			fmt.Println("No workers registered")
-			return
-		}
-		baseExecutor := &executor.MockExecutor{}
-		rateLimited := executor.NewRateLimitedExecutor(
-			baseExecutor,
-			executor.NewTokenBucketLimiter(
-				e.Config.RateLimit,
-				e.Config.RateBurst,
-			),
-		)
-		exec := executor.NewCircuitBreakerExecutor(
-			rateLimited,
-			e.Config.BreakerFailureThreshold,
-			e.Config.BreakerResetTimeout,
-		)
-		remoteRunner := runner.New(
-			e.JobStore,
-			e.Scheduler.Results,
-			exec,
-		)
-		grpcWorker := server.NewWorkerServer(
-			e.WorkerManager,
-			remoteRunner,
-		)
-		if err := server.StartGRPCServer(50051, grpcWorker); err != nil {
-			fmt.Println(err)
-		}
-	}()
+	// Monitor detects heartbeat timeouts and sends dead worker IDs to
+	// DeadWorkers channel. The scheduler's recoveryLoop reads from that
+	// channel and requeues any in-flight jobs assigned to the dead worker.
+	go e.WorkerManager.Monitor(e.ctx, e.Config.HeartbeatTimeout)
 }
 
 func (e *Engine) Stop() error {
 	e.cancel()
 	e.wg.Wait()
-	for _, c := range e.RemoteClients {
-		if err := c.Close(); err != nil {
-			fmt.Println("failed to close gRPC client:", err)
-		}
+
+	if e.RaftNode != nil {
+		_ = e.RaftNode.Close()
 	}
+
 	compactErr := e.Scheduler.CreateSnapshot(e.Snapshot, e.WAL)
 	closeErr := e.WAL.Close()
+
+	if closer, ok := e.JobStore.(io.Closer); ok {
+		if err := closer.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
 
 	if compactErr != nil && closeErr != nil {
 		return fmt.Errorf("snapshot compaction failed: %v; wal close failed: %v", compactErr, closeErr)
@@ -211,18 +201,27 @@ func (e *Engine) Restore() error {
 		recoveredJobs[j.ID] = j
 	}
 
-	maxID := int64(0)
 	for _, recovered := range recoveredJobs {
 		j := normalizeRecoveredJob(recovered)
 		if (j.Status == job.Retrying || j.Status == job.Scheduled) && !j.NextRunAt.After(time.Now()) {
 			j.Status = job.Pending
 		}
 		e.JobStore.Add(j)
-		enqueueRecoveredJob(e.PriorityQueue, e.DelayQueue, j)
+	}
+
+	// Scan all jobs in JobStore (including persistent BoltStore state)
+	maxID := int64(0)
+	for _, j := range e.JobStore.List() {
+		j = normalizeRecoveredJob(j)
+		if (j.Status == job.Retrying || j.Status == job.Scheduled) && !j.NextRunAt.After(time.Now()) {
+			j.Status = job.Pending
+		}
+		e.JobStore.Update(j)
 
 		if int64(j.ID) > maxID {
 			maxID = int64(j.ID)
 		}
+		enqueueRecoveredJob(e.PriorityQueue, e.DelayQueue, j)
 	}
 	e.nextJobID.Store(maxID)
 	return nil
@@ -296,6 +295,7 @@ func (e *Engine) ListCronJobs() []cron.CronJob {
 func normalizeRecoveredJob(j job.Job) job.Job {
 	if j.Status == job.Running {
 		j.Status = job.Pending
+		j.WorkerID = 0
 	}
 	return j
 }

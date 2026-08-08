@@ -21,3 +21,40 @@
 {"kind":"complete","job_id":1}
 {"kind":"failed","job":{"ID":2,"Type":"play games","Priority":5,"Status":"FAILED","RetryCount":0,"MaxRetries":0,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"simulated failure","WorkerID":2}}
 {"kind":"complete","job_id":3}
+{"kind":"complete","job_id":1}
+{"kind":"failed","job":{"ID":2,"Type":"play games","Priority":5,"Status":"FAILED","RetryCount":0,"MaxRetries":0,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"simulated failure","WorkerID":1}}
+{"kind":"complete","job_id":3}
+{"kind":"failed","job":{"ID":2,"Type":"play games","Priority":5,"Status":"FAILED","RetryCount":0,"MaxRetries":0,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"simulated failure","WorkerID":1}}
+{"kind":"complete","job_id":1}
+{"kind":"complete","job_id":3}
+{"kind":"complete","job_id":1}
+{"kind":"failed","job":{"ID":2,"Type":"play games","Priority":5,"Status":"FAILED","RetryCount":0,"MaxRetries":0,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"simulated failure","WorkerID":1}}
+{"kind":"complete","job_id":3}
+{"kind":"complete","job_id":1}
+{"kind":"failed","job":{"ID":2,"Type":"play games","Priority":5,"Status":"FAILED","RetryCount":0,"MaxRetries":0,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"simulated failure","WorkerID":1}}
+{"kind":"complete","job_id":3}
+{"kind":"complete","job_id":1}
+{"kind":"failed","job":{"ID":2,"Type":"play games","Priority":5,"Status":"FAILED","RetryCount":0,"MaxRetries":0,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"simulated failure","WorkerID":1}}
+{"kind":"complete","job_id":3}
+{"kind":"submit","job":{"ID":4,"Type":"email","Priority":5,"Status":"PENDING","RetryCount":0,"MaxRetries":3,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"","WorkerID":0}}
+{"kind":"retry","job":{"ID":4,"Type":"email","Priority":5,"Status":"RETRYING","RetryCount":1,"MaxRetries":3,"NextRunAt":"2026-08-06T00:49:08.6061909+05:30","LastError":"simulated failure","WorkerID":1}}
+{"kind":"retry","job":{"ID":4,"Type":"email","Priority":5,"Status":"RETRYING","RetryCount":2,"MaxRetries":3,"NextRunAt":"2026-08-06T00:49:13.6222962+05:30","LastError":"simulated failure","WorkerID":1}}
+{"kind":"retry","job":{"ID":4,"Type":"email","Priority":5,"Status":"RETRYING","RetryCount":3,"MaxRetries":3,"NextRunAt":"2026-08-06T00:49:22.6237457+05:30","LastError":"simulated failure","WorkerID":1}}
+{"kind":"failed","job":{"ID":4,"Type":"email","Priority":5,"Status":"FAILED","RetryCount":3,"MaxRetries":3,"NextRunAt":"2026-08-06T00:49:22.6237457+05:30","LastError":"simulated failure","WorkerID":1}}
+{"kind":"submit","job":{"ID":5,"Type":"email","Priority":5,"Status":"PENDING","RetryCount":0,"MaxRetries":3,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"","WorkerID":0}}
+{"kind":"submit","job":{"ID":6,"Type":"email","Priority":5,"Status":"PENDING","RetryCount":0,"MaxRetries":3,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"","WorkerID":0}}
+{"kind":"complete","job_id":5}
+{"kind":"submit","job":{"ID":7,"Type":"email","Priority":5,"Status":"PENDING","RetryCount":0,"MaxRetries":3,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"","WorkerID":0}}
+{"kind":"submit","job":{"ID":8,"Type":"email","Priority":5,"Status":"PENDING","RetryCount":0,"MaxRetries":3,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"","WorkerID":0}}
+{"kind":"retry","job":{"ID":6,"Type":"email","Priority":5,"Status":"RETRYING","RetryCount":1,"MaxRetries":3,"NextRunAt":"2026-08-06T00:49:31.6053531+05:30","LastError":"simulated failure","WorkerID":1}}
+{"kind":"complete","job_id":7}
+{"kind":"retry","job":{"ID":8,"Type":"email","Priority":5,"Status":"RETRYING","RetryCount":1,"MaxRetries":3,"NextRunAt":"2026-08-06T00:49:33.6070546+05:30","LastError":"simulated failure","WorkerID":1}}
+{"kind":"retry","job":{"ID":6,"Type":"email","Priority":5,"Status":"RETRYING","RetryCount":2,"MaxRetries":3,"NextRunAt":"2026-08-06T00:49:36.6085584+05:30","LastError":"simulated failure","WorkerID":1}}
+{"kind":"retry","job":{"ID":8,"Type":"email","Priority":5,"Status":"RETRYING","RetryCount":2,"MaxRetries":3,"NextRunAt":"2026-08-06T00:49:38.6089197+05:30","LastError":"simulated failure","WorkerID":1}}
+{"kind":"retry","job":{"ID":6,"Type":"email","Priority":5,"Status":"RETRYING","RetryCount":3,"MaxRetries":3,"NextRunAt":"2026-08-06T00:49:45.6128748+05:30","LastError":"simulated failure","WorkerID":1}}
+{"kind":"retry","job":{"ID":8,"Type":"email","Priority":5,"Status":"RETRYING","RetryCount":3,"MaxRetries":3,"NextRunAt":"2026-08-06T00:49:47.6107934+05:30","LastError":"simulated failure","WorkerID":1}}
+{"kind":"failed","job":{"ID":6,"Type":"email","Priority":5,"Status":"FAILED","RetryCount":3,"MaxRetries":3,"NextRunAt":"2026-08-06T00:49:45.6128748+05:30","LastError":"circuit breaker is open","WorkerID":1}}
+{"kind":"failed","job":{"ID":8,"Type":"email","Priority":5,"Status":"FAILED","RetryCount":3,"MaxRetries":3,"NextRunAt":"2026-08-06T00:49:47.6107934+05:30","LastError":"circuit breaker is open","WorkerID":1}}
+{"kind":"complete","job_id":1}
+{"kind":"failed","job":{"ID":2,"Type":"play games","Priority":5,"Status":"FAILED","RetryCount":0,"MaxRetries":0,"NextRunAt":"0001-01-01T00:00:00Z","LastError":"simulated failure","WorkerID":1}}
+{"kind":"complete","job_id":3}

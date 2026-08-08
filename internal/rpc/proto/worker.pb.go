@@ -25,6 +25,7 @@ type RegisterWorkerRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	WorkerId      int32                  `protobuf:"varint,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	Address       string                 `protobuf:"bytes,2,opt,name=address,proto3" json:"address,omitempty"`
+	Topics        []string               `protobuf:"bytes,3,rep,name=topics,proto3" json:"topics,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -71,6 +72,13 @@ func (x *RegisterWorkerRequest) GetAddress() string {
 		return x.Address
 	}
 	return ""
+}
+
+func (x *RegisterWorkerRequest) GetTopics() []string {
+	if x != nil {
+		return x.Topics
+	}
+	return nil
 }
 
 type RegisterWorkerResponse struct {
@@ -333,14 +341,127 @@ func (x *HeartbeatResponse) GetSuccess() bool {
 	return false
 }
 
+type ReportResultRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         int64                  `protobuf:"varint,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Success       bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
+	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	WorkerId      int32                  `protobuf:"varint,4,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportResultRequest) Reset() {
+	*x = ReportResultRequest{}
+	mi := &file_internal_rpc_proto_worker_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportResultRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportResultRequest) ProtoMessage() {}
+
+func (x *ReportResultRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_rpc_proto_worker_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportResultRequest.ProtoReflect.Descriptor instead.
+func (*ReportResultRequest) Descriptor() ([]byte, []int) {
+	return file_internal_rpc_proto_worker_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ReportResultRequest) GetJobId() int64 {
+	if x != nil {
+		return x.JobId
+	}
+	return 0
+}
+
+func (x *ReportResultRequest) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *ReportResultRequest) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
+func (x *ReportResultRequest) GetWorkerId() int32 {
+	if x != nil {
+		return x.WorkerId
+	}
+	return 0
+}
+
+type ReportResultResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Acknowledged  bool                   `protobuf:"varint,1,opt,name=acknowledged,proto3" json:"acknowledged,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportResultResponse) Reset() {
+	*x = ReportResultResponse{}
+	mi := &file_internal_rpc_proto_worker_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportResultResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportResultResponse) ProtoMessage() {}
+
+func (x *ReportResultResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_rpc_proto_worker_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportResultResponse.ProtoReflect.Descriptor instead.
+func (*ReportResultResponse) Descriptor() ([]byte, []int) {
+	return file_internal_rpc_proto_worker_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ReportResultResponse) GetAcknowledged() bool {
+	if x != nil {
+		return x.Acknowledged
+	}
+	return false
+}
+
 var File_internal_rpc_proto_worker_proto protoreflect.FileDescriptor
 
 const file_internal_rpc_proto_worker_proto_rawDesc = "" +
 	"\n" +
-	"\x1finternal/rpc/proto/worker.proto\x12\x06worker\"N\n" +
+	"\x1finternal/rpc/proto/worker.proto\x12\x06worker\"f\n" +
 	"\x15RegisterWorkerRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\x05R\bworkerId\x12\x18\n" +
-	"\aaddress\x18\x02 \x01(\tR\aaddress\"H\n" +
+	"\aaddress\x18\x02 \x01(\tR\aaddress\x12\x16\n" +
+	"\x06topics\x18\x03 \x03(\tR\x06topics\"H\n" +
 	"\x16RegisterWorkerResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"o\n" +
@@ -355,11 +476,19 @@ const file_internal_rpc_proto_worker_proto_rawDesc = "" +
 	"\x10HeartbeatRequest\x12\x1b\n" +
 	"\tworker_id\x18\x01 \x01(\x05R\bworkerId\"-\n" +
 	"\x11HeartbeatResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess2\xe4\x01\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"y\n" +
+	"\x13ReportResultRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\x03R\x05jobId\x12\x18\n" +
+	"\asuccess\x18\x02 \x01(\bR\asuccess\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\x12\x1b\n" +
+	"\tworker_id\x18\x04 \x01(\x05R\bworkerId\":\n" +
+	"\x14ReportResultResponse\x12\"\n" +
+	"\facknowledged\x18\x01 \x01(\bR\facknowledged2\xaf\x02\n" +
 	"\rWorkerService\x12O\n" +
 	"\x0eRegisterWorker\x12\x1d.worker.RegisterWorkerRequest\x1a\x1e.worker.RegisterWorkerResponse\x12@\n" +
 	"\tSubmitJob\x12\x18.worker.SubmitJobRequest\x1a\x19.worker.SubmitJobResponse\x12@\n" +
-	"\tHeartbeat\x12\x18.worker.HeartbeatRequest\x1a\x19.worker.HeartbeatResponseB$Z\"quorum/internal/rpc/proto;workerpbb\x06proto3"
+	"\tHeartbeat\x12\x18.worker.HeartbeatRequest\x1a\x19.worker.HeartbeatResponse\x12I\n" +
+	"\fReportResult\x12\x1b.worker.ReportResultRequest\x1a\x1c.worker.ReportResultResponseB$Z\"quorum/internal/rpc/proto;workerpbb\x06proto3"
 
 var (
 	file_internal_rpc_proto_worker_proto_rawDescOnce sync.Once
@@ -373,7 +502,7 @@ func file_internal_rpc_proto_worker_proto_rawDescGZIP() []byte {
 	return file_internal_rpc_proto_worker_proto_rawDescData
 }
 
-var file_internal_rpc_proto_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_internal_rpc_proto_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_internal_rpc_proto_worker_proto_goTypes = []any{
 	(*RegisterWorkerRequest)(nil),  // 0: worker.RegisterWorkerRequest
 	(*RegisterWorkerResponse)(nil), // 1: worker.RegisterWorkerResponse
@@ -381,16 +510,20 @@ var file_internal_rpc_proto_worker_proto_goTypes = []any{
 	(*SubmitJobResponse)(nil),      // 3: worker.SubmitJobResponse
 	(*HeartbeatRequest)(nil),       // 4: worker.HeartbeatRequest
 	(*HeartbeatResponse)(nil),      // 5: worker.HeartbeatResponse
+	(*ReportResultRequest)(nil),    // 6: worker.ReportResultRequest
+	(*ReportResultResponse)(nil),   // 7: worker.ReportResultResponse
 }
 var file_internal_rpc_proto_worker_proto_depIdxs = []int32{
 	0, // 0: worker.WorkerService.RegisterWorker:input_type -> worker.RegisterWorkerRequest
 	2, // 1: worker.WorkerService.SubmitJob:input_type -> worker.SubmitJobRequest
 	4, // 2: worker.WorkerService.Heartbeat:input_type -> worker.HeartbeatRequest
-	1, // 3: worker.WorkerService.RegisterWorker:output_type -> worker.RegisterWorkerResponse
-	3, // 4: worker.WorkerService.SubmitJob:output_type -> worker.SubmitJobResponse
-	5, // 5: worker.WorkerService.Heartbeat:output_type -> worker.HeartbeatResponse
-	3, // [3:6] is the sub-list for method output_type
-	0, // [0:3] is the sub-list for method input_type
+	6, // 3: worker.WorkerService.ReportResult:input_type -> worker.ReportResultRequest
+	1, // 4: worker.WorkerService.RegisterWorker:output_type -> worker.RegisterWorkerResponse
+	3, // 5: worker.WorkerService.SubmitJob:output_type -> worker.SubmitJobResponse
+	5, // 6: worker.WorkerService.Heartbeat:output_type -> worker.HeartbeatResponse
+	7, // 7: worker.WorkerService.ReportResult:output_type -> worker.ReportResultResponse
+	4, // [4:8] is the sub-list for method output_type
+	0, // [0:4] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
 	0, // [0:0] is the sub-list for extension extendee
 	0, // [0:0] is the sub-list for field type_name
@@ -407,7 +540,7 @@ func file_internal_rpc_proto_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_rpc_proto_worker_proto_rawDesc), len(file_internal_rpc_proto_worker_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

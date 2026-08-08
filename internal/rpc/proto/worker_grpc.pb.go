@@ -22,6 +22,7 @@ const (
 	WorkerService_RegisterWorker_FullMethodName = "/worker.WorkerService/RegisterWorker"
 	WorkerService_SubmitJob_FullMethodName      = "/worker.WorkerService/SubmitJob"
 	WorkerService_Heartbeat_FullMethodName      = "/worker.WorkerService/Heartbeat"
+	WorkerService_ReportResult_FullMethodName   = "/worker.WorkerService/ReportResult"
 )
 
 // WorkerServiceClient is the client API for WorkerService service.
@@ -31,6 +32,7 @@ type WorkerServiceClient interface {
 	RegisterWorker(ctx context.Context, in *RegisterWorkerRequest, opts ...grpc.CallOption) (*RegisterWorkerResponse, error)
 	SubmitJob(ctx context.Context, in *SubmitJobRequest, opts ...grpc.CallOption) (*SubmitJobResponse, error)
 	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
+	ReportResult(ctx context.Context, in *ReportResultRequest, opts ...grpc.CallOption) (*ReportResultResponse, error)
 }
 
 type workerServiceClient struct {
@@ -71,6 +73,16 @@ func (c *workerServiceClient) Heartbeat(ctx context.Context, in *HeartbeatReques
 	return out, nil
 }
 
+func (c *workerServiceClient) ReportResult(ctx context.Context, in *ReportResultRequest, opts ...grpc.CallOption) (*ReportResultResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReportResultResponse)
+	err := c.cc.Invoke(ctx, WorkerService_ReportResult_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WorkerServiceServer is the server API for WorkerService service.
 // All implementations must embed UnimplementedWorkerServiceServer
 // for forward compatibility.
@@ -78,6 +90,7 @@ type WorkerServiceServer interface {
 	RegisterWorker(context.Context, *RegisterWorkerRequest) (*RegisterWorkerResponse, error)
 	SubmitJob(context.Context, *SubmitJobRequest) (*SubmitJobResponse, error)
 	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
+	ReportResult(context.Context, *ReportResultRequest) (*ReportResultResponse, error)
 	mustEmbedUnimplementedWorkerServiceServer()
 }
 
@@ -96,6 +109,9 @@ func (UnimplementedWorkerServiceServer) SubmitJob(context.Context, *SubmitJobReq
 }
 func (UnimplementedWorkerServiceServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Heartbeat not implemented")
+}
+func (UnimplementedWorkerServiceServer) ReportResult(context.Context, *ReportResultRequest) (*ReportResultResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ReportResult not implemented")
 }
 func (UnimplementedWorkerServiceServer) mustEmbedUnimplementedWorkerServiceServer() {}
 func (UnimplementedWorkerServiceServer) testEmbeddedByValue()                       {}
@@ -172,6 +188,24 @@ func _WorkerService_Heartbeat_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WorkerService_ReportResult_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReportResultRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WorkerServiceServer).ReportResult(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WorkerService_ReportResult_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WorkerServiceServer).ReportResult(ctx, req.(*ReportResultRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WorkerService_ServiceDesc is the grpc.ServiceDesc for WorkerService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -190,6 +224,10 @@ var WorkerService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Heartbeat",
 			Handler:    _WorkerService_Heartbeat_Handler,
+		},
+		{
+			MethodName: "ReportResult",
+			Handler:    _WorkerService_ReportResult_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

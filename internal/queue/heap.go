@@ -2,11 +2,11 @@ package queue
 
 import "quorum/internal/store"
 
-type Comparator func(aID, bID int, store *store.JobStore) bool
+type Comparator func(aID, bID int, store store.Store) bool
 
 type Heap struct {
 	items      []int
-	store      *store.JobStore
+	store      store.Store
 	comparator Comparator
 }
 

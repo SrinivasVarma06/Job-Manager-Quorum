@@ -1,49 +1,78 @@
 package workermanager
 
 import (
-	"quorum/internal/worker"
-	"quorum/internal/config"
+	"context"
+	"log/slog"
 	"sync"
 	"time"
-	"context"
-	"fmt"
+
+	"quorum/internal/broker"
+	"quorum/internal/config"
+	"quorum/internal/worker"
 )
 
 type WorkerInfo struct {
 	Client        worker.WorkerClient
 	LastHeartbeat time.Time
 	Alive         bool
+	Topics        []string
+	Address       string
+}
+
+type NodeSnapshot struct {
+	ID            int       `json:"id"`
+	Address       string    `json:"address"`
+	Alive         bool      `json:"alive"`
+	LastHeartbeat time.Time `json:"last_heartbeat"`
+	Topics        []string  `json:"topics"`
 }
 
 type Manager struct {
-	workers map[int]*WorkerInfo
-	Available chan worker.WorkerClient
-	mu        sync.RWMutex
+	workers     map[int]*WorkerInfo
+	Available   chan worker.WorkerClient
+	mu          sync.RWMutex
 	DeadWorkers chan int
+	Broker      *broker.Broker
 }
 
 func NewManager() *Manager {
 	return &Manager{
-		workers:   make(map[int]*WorkerInfo),
-		Available: make(chan worker.WorkerClient, 100),
+		workers:     make(map[int]*WorkerInfo),
+		Available:   make(chan worker.WorkerClient, 100),
 		DeadWorkers: make(chan int, config.Default().WorkerCount),
+		Broker:      broker.New(),
 	}
 }
 
-func (m *Manager) Register(w worker.WorkerClient) {
+func (m *Manager) Register(w worker.WorkerClient, address string, topics ...string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.workers[w.ID()] = &WorkerInfo{
 		Client:        w,
 		LastHeartbeat: time.Now(),
 		Alive:         true,
+		Topics:        topics,
+		Address:       address,
+	}
+	m.mu.Unlock()
+
+	m.Broker.RegisterWorker(w.ID(), topics)
+}
+
+// MakeAvailable sends the worker into the Available channel so the scheduler
+// can pick it up for dispatch.
+func (m *Manager) MakeAvailable(w worker.WorkerClient) {
+	select {
+	case m.Available <- w:
+	default:
 	}
 }
 
 func (m *Manager) Remove(id int) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	delete(m.workers, id)
+	m.mu.Unlock()
+
+	m.Broker.UnregisterWorker(id)
 }
 
 func (m *Manager) Get(id int) (worker.WorkerClient, bool) {
@@ -74,6 +103,22 @@ func (m *Manager) List() []worker.WorkerClient {
 	return workers
 }
 
+func (m *Manager) Nodes() []NodeSnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	nodes := make([]NodeSnapshot, 0, len(m.workers))
+	for id, info := range m.workers {
+		nodes = append(nodes, NodeSnapshot{
+			ID:            id,
+			Address:       info.Address,
+			Alive:         info.Alive,
+			LastHeartbeat: info.LastHeartbeat,
+			Topics:        info.Topics,
+		})
+	}
+	return nodes
+}
+
 func (m *Manager) Heartbeat(id int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -99,17 +144,15 @@ func (m *Manager) Monitor(ctx context.Context, timeout time.Duration) {
 				if time.Since(info.LastHeartbeat) > timeout {
 					if info.Alive {
 						info.Alive = false
-						fmt.Printf("Worker %d timed out\n", info.Client.ID())
+						slog.Warn("Worker timed out", "worker_id", info.Client.ID())
 						select {
-							case m.DeadWorkers <- info.Client.ID():
-							default:
+						case m.DeadWorkers <- info.Client.ID():
+						default:
 						}
 					}
 				}
-
 			}
 			m.mu.Unlock()
 		}
 	}
-
 }

@@ -9,9 +9,12 @@ import (
 	workerpb "quorum/internal/rpc/proto"
 )
 
+// StartGRPCServer registers the given WorkerServiceServer implementation and
+// begins serving on the specified port. Both WorkerServer (control node) and
+// ExecutionServer (worker node) satisfy this interface.
 func StartGRPCServer(
 	port int,
-	workerServer *WorkerServer,
+	srv workerpb.WorkerServiceServer,
 ) error {
 	address := fmt.Sprintf(":%d", port)
 	listener, err := net.Listen("tcp", address)
@@ -19,10 +22,7 @@ func StartGRPCServer(
 		return err
 	}
 	grpcServer := grpc.NewServer()
-	workerpb.RegisterWorkerServiceServer(
-		grpcServer,
-		workerServer,
-	)
+	workerpb.RegisterWorkerServiceServer(grpcServer, srv)
 	fmt.Printf("gRPC server listening on %s\n", address)
 	return grpcServer.Serve(listener)
 }

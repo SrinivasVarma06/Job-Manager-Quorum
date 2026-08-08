@@ -120,12 +120,15 @@ func (w *WAL) Replay() ([]job.Job, error) {
 		}
 		var legacyJob job.Job
 		if err := json.Unmarshal(line, &legacyJob); err != nil {
-			return nil, err
+			// If unmarshaling fails on a line, it indicates trailing corrupted/truncated
+			// data (e.g. from an abrupt power outage during append). We stop scanning
+			// and return all valid records read up to this point.
+			break
 		}
 		pending[legacyJob.ID] = legacyJob
 	}
 
-	if err := scanner.Err(); err != nil {
+	if err := scanner.Err(); err != nil && err != io.EOF {
 		return nil, err
 	}
 

@@ -2,6 +2,10 @@ package scheduler
 
 import (
 	"context"
+	"log/slog"
+	"time"
+
+	"quorum/internal/broker"
 	"quorum/internal/config"
 	"quorum/internal/dlq"
 	"quorum/internal/job"
@@ -10,7 +14,6 @@ import (
 	"quorum/internal/storage"
 	"quorum/internal/store"
 	"quorum/internal/worker"
-	"time"
 )
 
 type Scheduler struct {
@@ -19,19 +22,21 @@ type Scheduler struct {
 	Available     chan worker.WorkerClient
 	Results       chan job.Result
 	WAL           *storage.WAL
-	Store         *store.JobStore
-	DLQ		   *dlq.DeadLetterQueue
-	DeadWorkers <-chan int
+	Store         store.Store
+	DLQ           *dlq.DeadLetterQueue
+	DeadWorkers   <-chan int
+	Broker        *broker.Broker
 }
 
 func NewScheduler(
 	priorityQueue *queue.JobQueue, 
 	delayQueue *queue.JobQueue, 
 	available chan worker.WorkerClient, 
-	wal *storage.WAL, store *store.JobStore, 
+	wal *storage.WAL, store store.Store, 
 	dlq *dlq.DeadLetterQueue, 
 	deadWorkers <-chan int,
 	resultBuffer int,
+	br *broker.Broker,
 	) *Scheduler {
 	return &Scheduler{
 		PriorityQueue: priorityQueue,
@@ -42,6 +47,7 @@ func NewScheduler(
 		Store:         store,
 		DLQ:           dlq,
 		DeadWorkers:   deadWorkers,
+		Broker:        br,
 	}
 }
 
@@ -49,22 +55,45 @@ func (s *Scheduler) Dispatch(ctx context.Context, j job.Job) bool {
 	select {
 	case <-ctx.Done():
 		return false
-	case w := <-s.Available:
-		j.WorkerID = w.ID()
-		j.Status = job.Running
-		s.Store.Update(j)
+	default:
+	}
 
+	var w worker.WorkerClient
+	var ok bool
+
+	if s.Broker != nil {
+		w, ok = s.Broker.SelectWorker(j.Type, s.Available)
+	} else {
 		select {
-		case <-ctx.Done():
-			return false
+		case w = <-s.Available:
+			ok = true
 		default:
-			err := w.Submit(ctx, j)
-			if err != nil {
-				return false
-			}
-			return true
+			ok = false
 		}
 	}
+
+	if !ok {
+		// No capable worker currently available. Re-enqueue job.
+		j.Status = job.Pending
+		s.Store.Update(j)
+		s.PriorityQueue.Enqueue(j.ID)
+		return false
+	}
+
+	j.WorkerID = w.ID()
+	j.Status = job.Running
+	s.Store.Update(j)
+
+	err := w.Submit(ctx, j)
+	if err != nil {
+		slog.Warn("Failed to dispatch job to worker, re-queueing", "job_id", j.ID, "worker_id", w.ID(), "error", err)
+		j.Status = job.Pending
+		j.WorkerID = 0
+		s.Store.Update(j)
+		s.PriorityQueue.Enqueue(j.ID)
+		return false
+	}
+	return true
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
@@ -129,7 +158,11 @@ func (s *Scheduler) dispatchLoop(ctx context.Context) {
 				}
 
 				if ok := s.Dispatch(ctx, j); !ok {
-					return
+					if ctx.Err() != nil {
+						return
+					}
+					// If context is still active, continue trying next jobs/workers
+					continue
 				}
 			}
 		}
@@ -149,6 +182,8 @@ func (s *Scheduler) resultLoop(ctx context.Context) {
 			}
 
 			if result.Success {
+				j.Status = job.Completed
+				s.Store.Update(j)
 				if err := s.WAL.AppendCompletion(result.JobID); err != nil {
 					panic(err)
 				}
@@ -229,11 +264,13 @@ func (s *Scheduler) recoveryLoop(ctx context.Context) {
 			return
 		case workerID := <-s.DeadWorkers:
 			jobs := s.Store.RunningJobs(workerID)
+			slog.Warn("Processing failover for dead worker", "worker_id", workerID, "running_jobs_count", len(jobs))
 			for _, j := range jobs {
 				j.Status = job.Pending
 				j.WorkerID = 0
 				s.Store.Update(j)
 				s.PriorityQueue.Enqueue(j.ID)
+				slog.Info("Recovered job from dead worker, re-queued", "job_id", j.ID, "dead_worker_id", workerID)
 			}
 		}
 	}

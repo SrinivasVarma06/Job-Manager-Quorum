@@ -4,19 +4,28 @@ This document is the source of truth for Quorum's current implementation.
 
 ## 1) High-level flow
 
-Client (HTTP) -> Handlers -> Engine -> JobStore + WAL + Queues -> Scheduler -> Worker Pool -> Executor -> Result -> Scheduler retry/fail/complete handling
-Cron path: CronScheduler -> Engine.SubmitJob -> WAL + Store + PriorityQueue
-Scheduled job path: POST /jobs with run_at -> Engine.SubmitJobAt -> WAL + Store + DelayQueue
+**Local path (unchanged):**
+Client (HTTP) → Handlers → Engine → JobStore + WAL + Queues → Scheduler → WorkerManager.Available → WorkerClient → Executor → Result → Scheduler result/retry/fail handling
+
+**Distributed path (PR #15):**
+Client (HTTP) → Engine → PriorityQueue → Scheduler.dispatchLoop → RemoteWorker (proxy) → gRPC SubmitJob → Worker Node: ExecutionServer → Runner → Executor → Results chan → gRPC ReportResult → Control Node: WorkerServer.ReportResult → Scheduler.Results → resultLoop
+
+Cron path: CronScheduler → Engine.SubmitJob → WAL + Store + PriorityQueue
+Scheduled job path: POST /jobs with run_at → Engine.SubmitJobAt → WAL + Store + DelayQueue
 
 ## 2) Project structure
 
 ```text
 cmd/
   server/
-    server.go
+    server.go    control node entrypoint
+  worker/
+    main.go      worker node entrypoint
 
 internal/
+  broker/         topic subscription management & capability-aware worker routing
   config/         runtime config defaults
+  consensus/      Raft consensus, FSM log replication, & leader election (hashicorp/raft)
   cron/           cron scheduler integrated with engine submit path
   dlq/            dead-letter queue
   engine/         application composition + lifecycle
@@ -27,25 +36,65 @@ internal/
   middleware/     request id + logging middleware
   queue/          heap-based queue abstraction (priority + delay)
   retry/          retry policy + backoff
-  scheduler/      dispatch/result/delay loops
+  rpc/
+    client/       gRPC client (worker→controller registration/heartbeat/ReportResult, controller→worker Submit)
+    proto/        protobuf definitions and generated code
+    proxy/        RemoteWorker — implements worker.WorkerClient over gRPC
+    server/
+      grpc.go           StartGRPCServer (accepts WorkerServiceServer interface)
+      server.go         WorkerServer — control node RPC handler
+      execution_server.go  ExecutionServer — worker node RPC handler
+  runner/         job execution (used by both local Worker and ExecutionServer)
+  scheduler/      dispatch/result/delay/recovery loops
   storage/        WAL + snapshot storage
-  store/          in-memory thread-safe JobStore
-  workermanager/  worker registry + availability channel
-  worker/         worker lifecycle + execution
+  store/          Store interface + MemoryStore (in-memory) + BoltStore (bbolt ACID disk DB)
+  workermanager/  worker registry + availability channel + MakeAvailable
+  worker/         local worker lifecycle (WorkerClient interface + Worker impl)
 ```
 
 ## 3) Package responsibilities, API, dependencies
 
+### `internal/broker`
+- **Purpose:** worker topic capability registration & capability-aware job selection.
+- **Public API:** `New`, `RegisterWorker`, `UnregisterWorker`, `CanHandle`, `SelectWorker`.
+- **Depends on:** `job`, `worker`, `sync`, `log/slog`.
+
+### `internal/consensus`
+- **Purpose:** Raft consensus cluster management, FSM log replication, & leader election.
+- **Public API:** `NewFSM`, `NewRaftNode`, `IsLeader`, `LeaderAddr`, `ProposeAddJob`, `ProposeUpdateJob`, `ProposeDeleteJob`.
+- **Depends on:** `github.com/hashicorp/raft`, `job`, `store`, `log/slog`.
+
 ### `cmd/server`
-- **Purpose:** process entrypoint, boot engine + HTTP server.
+- **Purpose:** control node entrypoint — boot engine, HTTP server, gRPC WorkerServer.
 - **Key API:** `main()`.
-- **Depends on:** `internal/engine`, `internal/handlers`, `internal/middleware`, `net/http`.
+- **Depends on:** `internal/engine`, `internal/handlers`, `internal/middleware`, `internal/rpc/server`, `net/http`.
+
+### `cmd/worker`
+- **Purpose:** worker node entrypoint — boot runner, gRPC ExecutionServer, gRPC client to controller.
+- **Key API:** `main()`.
+- **Depends on:** `config`, `executor`, `job`, `rpc/client`, `rpc/server`, `runner`, `store`.
 
 ### `internal/engine`
-- **Purpose:** composition root and lifecycle owner.
+- **Purpose:** composition root and lifecycle owner for the control node.
 - **Owns:** priority queue, delay queue, WAL, snapshot store, scheduler, cron scheduler, worker manager, job store, DLQ, config.
 - **Public API:** `New`, `Start`, `Stop`, `Restore`, `SubmitJob`, `SubmitJobAt`, `Jobs`, `Job`, `DeleteJob`, `CancelJob`, `DeadJobs`, `AddCronJob`, `RemoveCronJob`, `ListCronJobs`.
 - **Depends on:** `config`, `dlq`, `executor`, `job`, `queue`, `scheduler`, `storage`, `store`, `worker`, `workermanager`.
+
+### `internal/rpc/server`
+- **Purpose:** gRPC service implementations.
+- **`WorkerServer`:** control node handler — `RegisterWorker` (dials worker back, creates `RemoteWorker`, registers + makes available), `Heartbeat`, `ReportResult` (writes result to `Scheduler.Results`, re-queues worker).
+- **`ExecutionServer`:** worker node handler — `SubmitJob` only (delegates to `runner.Execute` in a goroutine).
+- **`StartGRPCServer`:** accepts `workerpb.WorkerServiceServer` interface; used by both servers.
+
+### `internal/rpc/client`
+- **Purpose:** gRPC client for worker↔controller communication.
+- **`New(id, workerAddr, controllerAddr)`:** worker node dialing the controller.
+- **`NewOutbound(id, workerAddr)`:** control node dialing a worker.
+- **Methods:** `Start` (register + heartbeat loop), `Submit` (used via proxy), `ReportResult`.
+
+### `internal/rpc/proxy`
+- **Purpose:** adapts `rpc/client.Client` to the `worker.WorkerClient` interface.
+- **`RemoteWorker`:** `ID`, `Start` (no-op), `Submit` (calls `client.Submit`).
 
 ### `internal/scheduler`
 - **Purpose:** moves jobs from queues to workers and processes results.
@@ -64,9 +113,11 @@ internal/
 - **Depends on:** `worker`, `sync`.
 
 ### `internal/store`
-- **Purpose:** thread-safe in-memory job state.
-- **Public API:** `NewJobStore`, `Add`, `Get`, `List`, `Update`, `Delete`, `Cancel`.
-- **Depends on:** `job`, `sync`.
+- **Purpose:** persistent and in-memory job storage abstraction.
+- **`Store` Interface:** `Add`, `Get`, `List`, `Update`, `Delete`, `Cancel`, `RunningJobs`.
+- **`MemoryStore`:** thread-safe in-memory map store (zero disk IO).
+- **`BoltStore`:** embedded bbolt ACID disk database (`quorum.db`). Saves jobs as canonical JSON key-values in the `"jobs"` bucket.
+
 
 ### `internal/queue`
 - **Purpose:** heap-backed queue abstraction by job ID.
@@ -98,16 +149,9 @@ internal/
 - **Notes:** engine composes `Mock -> RateLimited -> CircuitBreaker`.
 
 ### `internal/handlers`
-- **Purpose:** HTTP endpoints.
-- **Public API:** `JobsHandler`, `SubmitJobHandler`, `ListJobsHandler`, `GetJobHandler`, `CancelJobHandler`, `CronJobsHandler`, `CreateCronJobHandler`, `ListCronJobsHandler`, `DeleteCronJobHandler`.
-- **Routes currently wired:**
-  - `POST /jobs`
-  - `GET /jobs`
-  - `GET /jobs/{id}`
-  - `DELETE /jobs/{id}`
-  - `POST /cron`
-  - `GET /cron`
-  - `DELETE /cron/{id}`
+- **Purpose:** HTTP REST handlers for jobs, cron, and cluster management.
+- **Endpoints:** `POST /jobs`, `GET /jobs`, `GET /jobs/{id}`, `DELETE /jobs/{id}`, `POST /cron`, `GET /cron`, `DELETE /cron/{id}`, `GET /cluster/status`, `GET /cluster/nodes`, `DELETE /cluster/nodes/{id}`.
+- **Depends on:** `engine`, `httpapi`, `job`, `workermanager`.
 
 ### `internal/middleware`
 - **Purpose:** request logging and request ID response header.
@@ -166,11 +210,13 @@ internal/
 ## 6) Current tradeoffs / known gaps
 
 - In-memory `JobStore` only; no distributed state.
-- No broker, leases, heartbeats, or worker reassignment yet.
-- No observability stack (metrics/tracing) yet.
-- No auth/security layer yet.
-- No benchmark/test suite checked into repo yet.
-- Cron parser currently supports `* * * * *` and `*/N * * * *` formats only.
+- Worker ID is hardcoded (`cfg.WorkerID = 1`); multi-worker needs env var or flag.
+- `WorkerManager.Monitor` (heartbeat timeout) is implemented but not yet started by `Engine.Start`; worker failover completes in PR #16.
+- No auth/TLS on gRPC (Phase 11).
+- No observability stack (metrics/tracing) yet (Phase 10).
+- `fmt.Printf` used for logging; will be replaced with structured logger (Phase 10).
+- Single proto service (`WorkerService`) shared by control and worker nodes; will be split into `ControllerService` / `ExecutionService` when the protocol grows (Phase 8+).
+- Cron parser supports `* * * * *` and `*/N * * * *` formats only.
 
 ## 7) Next recommended implementation order
 

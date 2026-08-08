@@ -1,7 +1,7 @@
 package runner
 
 import (
-	"fmt"
+	"log/slog"
 
 	"quorum/internal/executor"
 	"quorum/internal/job"
@@ -9,13 +9,13 @@ import (
 )
 
 type Runner struct {
-	Store    *store.JobStore
+	Store    store.Store
 	Results  chan job.Result
 	Executor executor.Executor
 }
 
 func New(
-	store *store.JobStore,
+	store store.Store,
 	results chan job.Result,
 	exec executor.Executor,
 ) *Runner {
@@ -27,23 +27,17 @@ func New(
 }
 
 func (r *Runner) Execute(workerID int, j job.Job) {
-	fmt.Printf(
-		"Worker %d is processing Job %d\n",
-		workerID,
-		j.ID,
-	)
+	slog.Info("Executing job", "worker_id", workerID, "job_id", j.ID, "type", j.Type)
+
 	err := r.Executor.Execute(j)
 	if err != nil {
 		j.Status = job.Failed
 		j.LastError = err.Error()
-		r.Store.Update(j)
+		if r.Store != nil {
+			r.Store.Update(j)
+		}
 
-		fmt.Printf(
-			"Worker %d failed Job %d: %v\n",
-			workerID,
-			j.ID,
-			err,
-		)
+		slog.Warn("Job failed", "worker_id", workerID, "job_id", j.ID, "error", err)
 
 		r.Results <- job.Result{
 			JobID:   j.ID,
@@ -52,13 +46,14 @@ func (r *Runner) Execute(workerID int, j job.Job) {
 		}
 		return
 	}
+
 	j.Status = job.Completed
-	r.Store.Update(j)
-	fmt.Printf(
-		"Worker %d completed Job %d\n",
-		workerID,
-		j.ID,
-	)
+	if r.Store != nil {
+		r.Store.Update(j)
+	}
+
+	slog.Info("Job completed", "worker_id", workerID, "job_id", j.ID)
+
 	r.Results <- job.Result{
 		JobID:   j.ID,
 		Success: true,

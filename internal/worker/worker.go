@@ -14,11 +14,11 @@ type Worker struct {
 	JobChannel chan job.Job
 	Available  chan WorkerClient
 	Results    chan job.Result
-	Store      *store.JobStore
+	Store      store.Store
 	Runner     *runner.Runner
 }
 
-func NewWorker(id int, available chan WorkerClient, results chan job.Result, store *store.JobStore, exec executor.Executor) *Worker {
+func NewWorker(id int, available chan WorkerClient, results chan job.Result, store store.Store, exec executor.Executor) *Worker {
 	return &Worker{
 		id:         id,
 		JobChannel: make(chan job.Job),

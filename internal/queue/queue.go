@@ -12,7 +12,7 @@ type JobQueue struct {
 	mu     sync.RWMutex
 }
 
-func NewJobQueue(store *store.JobStore, cmp Comparator) *JobQueue {
+func NewJobQueue(store store.Store, cmp Comparator) *JobQueue {
 	q := &JobQueue{
 		heap: Heap{
 			items:      make([]int, 0),
