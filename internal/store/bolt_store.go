@@ -7,74 +7,80 @@ import (
 	"strconv"
 
 	bolt "go.etcd.io/bbolt"
+	"quorum/internal/cron"
 	"quorum/internal/job"
 )
 
-var jobsBucket = []byte("jobs")
+var (
+	jobsBucket            = []byte("jobs")
+	cronBucket            = []byte("cron_jobs")
+	dlqBucket             = []byte("dlq")
+	statusPendingBucket   = []byte("status_pending")
+	statusScheduledBucket = []byte("status_scheduled")
+	statusCompletedBucket = []byte("status_completed")
+	statusFailedBucket    = []byte("status_failed")
+	statusCancelledBucket = []byte("status_cancelled")
+)
 
 // BoltStore is a persistent implementation of Store backed by bbolt (BoltDB).
 //
-// bbolt is an embedded key-value store that writes to a single file on disk.
-// It provides ACID transactions and a B-tree index, making it suitable for
-// production workloads that require job durability across control node restarts.
-//
-// Storage layout:
-//   bucket "jobs" → key: strconv.Itoa(job.ID) → value: JSON-encoded job.Job
-//
-// All reads use bbolt read transactions (concurrent safe).
-// All writes use bbolt write transactions (serialised; bbolt allows only one
-// concurrent write transaction at a time, which suits our single-writer pattern).
-//
-// Why bbolt?
-//   - Used internally by etcd for its Raft storage layer.
-//   - Single binary dependency, no external process required.
-//   - ACID transactions with crash-safe writes (fsync on commit).
-//   - B-tree storage gives O(log n) reads and writes.
-//   - Simple, well-understood API.
-//
-// Tradeoff: bbolt allows only one write transaction at a time. Under high
-// write throughput this becomes a bottleneck. For Phase 13 (Performance) we
-// would evaluate replacing with a more concurrent backend (e.g., badger, RocksDB).
+// Buckets layout:
+//   - "jobs"             -> key: JobID -> val: JSON job
+//   - "cron_jobs"        -> key: CronID -> val: JSON cron job
+//   - "dlq"              -> key: JobID -> val: JSON job
+//   - "status_pending"   -> key: JobID -> val: nil
+//   - "status_scheduled" -> key: JobID -> val: nil
+//   - "status_completed" -> key: JobID -> val: nil
+//   - "status_failed"    -> key: JobID -> val: nil
+//   - "status_cancelled" -> key: JobID -> val: nil
 type BoltStore struct {
 	db *bolt.DB
 }
 
-// NewBoltStore opens (or creates) a bbolt database file at path and initialises
-// the jobs bucket. Returns an error if the file cannot be opened or the
-// bucket cannot be created.
+// NewBoltStore opens (or creates) a bbolt database file at path and initialises all buckets.
 func NewBoltStore(path string) (*BoltStore, error) {
 	db, err := bolt.Open(path, 0600, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open bolt db at %q: %w", path, err)
 	}
 
-	// Ensure the jobs bucket exists. CreateBucketIfNotExists is idempotent.
+	buckets := [][]byte{
+		jobsBucket,
+		cronBucket,
+		dlqBucket,
+		statusPendingBucket,
+		statusScheduledBucket,
+		statusCompletedBucket,
+		statusFailedBucket,
+		statusCancelledBucket,
+	}
+
 	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(jobsBucket)
-		return err
+		for _, b := range buckets {
+			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
+				return fmt.Errorf("create bucket %s: %w", string(b), err)
+			}
+		}
+		return nil
 	}); err != nil {
-		return nil, fmt.Errorf("create jobs bucket: %w", err)
+		db.Close()
+		return nil, fmt.Errorf("initialise bolt buckets: %w", err)
 	}
 
 	return &BoltStore{db: db}, nil
 }
 
-// Close flushes pending writes and closes the database file.
-// Must be called before the process exits.
 func (s *BoltStore) Close() error {
 	return s.db.Close()
 }
 
-func (s *BoltStore) Add(j job.Job) {
-	if err := s.db.Update(func(tx *bolt.Tx) error {
-		return put(tx, j)
-	}); err != nil {
-		// Store.Add has no error return by interface contract. Log and continue;
-		// a failed write here means the job will be lost on restart but the
-		// in-flight execution can still complete.
-		// Future: propagate error through Store.Add in a later refactor.
-		_ = err
-	}
+func (s *BoltStore) Add(j job.Job) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		if err := putJob(tx, j); err != nil {
+			return err
+		}
+		return addToStatusBucket(tx, j.Status, j.ID)
+	})
 }
 
 func (s *BoltStore) Get(id int) (job.Job, bool) {
@@ -108,23 +114,75 @@ func (s *BoltStore) List() []job.Job {
 	return jobs
 }
 
-func (s *BoltStore) Update(j job.Job) {
-	_ = s.db.Update(func(tx *bolt.Tx) error {
-		return put(tx, j)
+func (s *BoltStore) ListByStatus(status job.Status) ([]job.Job, error) {
+	var jobs []job.Job
+	err := s.db.View(func(tx *bolt.Tx) error {
+		statusB := getStatusBucket(tx, status)
+		if statusB == nil {
+			return nil
+		}
+
+		jobsB := tx.Bucket(jobsBucket)
+		return statusB.ForEach(func(k, v []byte) error {
+			jobBytes := jobsB.Get(k)
+			if jobBytes == nil {
+				return nil
+			}
+			var j job.Job
+			if err := json.Unmarshal(jobBytes, &j); err != nil {
+				return err
+			}
+			jobs = append(jobs, j)
+			return nil
+		})
+	})
+	return jobs, err
+}
+
+func (s *BoltStore) Update(j job.Job) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(jobsBucket)
+		v := b.Get(key(j.ID))
+		if v == nil {
+			return fmt.Errorf("job %d not found for update", j.ID)
+		}
+
+		var existing job.Job
+		if err := json.Unmarshal(v, &existing); err != nil {
+			return fmt.Errorf("unmarshal job %d: %w", j.ID, err)
+		}
+
+		if !job.IsValidTransition(existing.Status, j.Status) {
+			return fmt.Errorf("invalid status transition from %s to %s for job %d", existing.Status, j.Status, j.ID)
+		}
+
+		if err := removeFromStatusBucket(tx, existing.Status, j.ID); err != nil {
+			return err
+		}
+		if err := putJob(tx, j); err != nil {
+			return err
+		}
+		return addToStatusBucket(tx, j.Status, j.ID)
 	})
 }
 
-func (s *BoltStore) Delete(id int) bool {
+func (s *BoltStore) Delete(id int) (bool, error) {
 	found := false
-	_ = s.db.Update(func(tx *bolt.Tx) error {
+	err := s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(jobsBucket)
-		if b.Get(key(id)) == nil {
+		v := b.Get(key(id))
+		if v == nil {
 			return nil
 		}
 		found = true
+
+		var j job.Job
+		if err := json.Unmarshal(v, &j); err == nil {
+			_ = removeFromStatusBucket(tx, j.Status, id)
+		}
 		return b.Delete(key(id))
 	})
-	return found
+	return found, err
 }
 
 func (s *BoltStore) Cancel(id int) error {
@@ -134,42 +192,92 @@ func (s *BoltStore) Cancel(id int) error {
 		if v == nil {
 			return errors.New("job not found")
 		}
+
 		var j job.Job
 		if err := json.Unmarshal(v, &j); err != nil {
 			return fmt.Errorf("unmarshal job: %w", err)
 		}
-		switch j.Status {
-		case job.Completed:
-			return errors.New("job already completed")
-		case job.Running:
-			return errors.New("job already running")
-		case job.Cancelled:
-			return errors.New("job already cancelled")
+
+		if j.Status == job.Completed || j.Status == job.Failed || j.Status == job.Cancelled {
+			return fmt.Errorf("job already in terminal status %s", j.Status)
 		}
+
+		if err := removeFromStatusBucket(tx, j.Status, id); err != nil {
+			return err
+		}
+
 		j.Status = job.Cancelled
-		return put(tx, j)
+		if err := putJob(tx, j); err != nil {
+			return err
+		}
+		return addToStatusBucket(tx, job.Cancelled, id)
 	})
 }
 
-func (s *BoltStore) RunningJobs(workerID int) []job.Job {
-	var jobs []job.Job
-	_ = s.db.View(func(tx *bolt.Tx) error {
-		return tx.Bucket(jobsBucket).ForEach(func(k, v []byte) error {
+func (s *BoltStore) AddCron(c cron.CronJob) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		v, err := json.Marshal(c)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(cronBucket).Put([]byte(c.ID), v)
+	})
+}
+
+func (s *BoltStore) DeleteCron(id string) (bool, error) {
+	found := false
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(cronBucket)
+		if b.Get([]byte(id)) == nil {
+			return nil
+		}
+		found = true
+		return b.Delete([]byte(id))
+	})
+	return found, err
+}
+
+func (s *BoltStore) ListCrons() ([]cron.CronJob, error) {
+	var crons []cron.CronJob
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(cronBucket).ForEach(func(k, v []byte) error {
+			var c cron.CronJob
+			if err := json.Unmarshal(v, &c); err != nil {
+				return err
+			}
+			crons = append(crons, c)
+			return nil
+		})
+	})
+	return crons, err
+}
+
+func (s *BoltStore) AddDLQ(j job.Job) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		v, err := json.Marshal(j)
+		if err != nil {
+			return err
+		}
+		return tx.Bucket(dlqBucket).Put(key(j.ID), v)
+	})
+}
+
+func (s *BoltStore) ListDLQ() ([]job.Job, error) {
+	var dlqJobs []job.Job
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(dlqBucket).ForEach(func(k, v []byte) error {
 			var j job.Job
 			if err := json.Unmarshal(v, &j); err != nil {
 				return err
 			}
-			if j.WorkerID == workerID && j.Status == job.Running {
-				jobs = append(jobs, j)
-			}
+			dlqJobs = append(dlqJobs, j)
 			return nil
 		})
 	})
-	return jobs
+	return dlqJobs, err
 }
 
-// put JSON-encodes a job and writes it to the jobs bucket within tx.
-func put(tx *bolt.Tx, j job.Job) error {
+func putJob(tx *bolt.Tx, j job.Job) error {
 	v, err := json.Marshal(j)
 	if err != nil {
 		return fmt.Errorf("marshal job %d: %w", j.ID, err)
@@ -177,7 +285,39 @@ func put(tx *bolt.Tx, j job.Job) error {
 	return tx.Bucket(jobsBucket).Put(key(j.ID), v)
 }
 
-// key converts a job ID to the byte slice used as a bbolt key.
+func getStatusBucket(tx *bolt.Tx, status job.Status) *bolt.Bucket {
+	switch status {
+	case job.Pending:
+		return tx.Bucket(statusPendingBucket)
+	case job.Scheduled:
+		return tx.Bucket(statusScheduledBucket)
+	case job.Completed:
+		return tx.Bucket(statusCompletedBucket)
+	case job.Failed:
+		return tx.Bucket(statusFailedBucket)
+	case job.Cancelled:
+		return tx.Bucket(statusCancelledBucket)
+	default:
+		return nil
+	}
+}
+
+func addToStatusBucket(tx *bolt.Tx, status job.Status, id int) error {
+	b := getStatusBucket(tx, status)
+	if b == nil {
+		return nil
+	}
+	return b.Put(key(id), []byte{})
+}
+
+func removeFromStatusBucket(tx *bolt.Tx, status job.Status, id int) error {
+	b := getStatusBucket(tx, status)
+	if b == nil {
+		return nil
+	}
+	return b.Delete(key(id))
+}
+
 func key(id int) []byte {
 	return []byte(strconv.Itoa(id))
 }

@@ -2,7 +2,6 @@ package engine_test
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -19,11 +18,7 @@ func TestEngineRestoreWithBoltStore(t *testing.T) {
 	cfg := config.Default()
 	cfg.StorageType = "bolt"
 	cfg.StoragePath = dbPath
-
-	defer func() {
-		_ = os.Remove("jobs.log")
-		_ = os.Remove("snapshot.json")
-	}()
+	cfg.RaftEnabled = false
 
 	// Phase 1: Boot engine, submit jobs using explicit test dbPath config
 	e1, err := engine.New(cfg)
@@ -85,22 +80,17 @@ func TestEngineRecoveryWhenWorkerDiesAndServerRestarts(t *testing.T) {
 	cfg := config.Default()
 	cfg.StorageType = "bolt"
 	cfg.StoragePath = dbPath
+	cfg.RaftEnabled = false
 
-	defer func() {
-		_ = os.Remove("jobs.log")
-		_ = os.Remove("snapshot.json")
-	}()
-
-	// 1. Manually populate BoltStore with a job in Running state assigned to Worker 101
+	// 1. Manually populate BoltStore with a job in Pending state
 	bs1, err := store.NewBoltStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create BoltStore: %v", err)
 	}
 
 	inFlightJob := job.NewJob(100, "critical_task", 50)
-	inFlightJob.Status = job.Running
-	inFlightJob.WorkerID = 101
-	bs1.Add(inFlightJob)
+	inFlightJob.Status = job.Pending
+	_ = bs1.Add(inFlightJob)
 	_ = bs1.Close()
 
 	// 2. Control node boots up (server restart scenario) with injected custom dbPath
@@ -114,7 +104,7 @@ func TestEngineRecoveryWhenWorkerDiesAndServerRestarts(t *testing.T) {
 		t.Fatalf("failed to restore engine: %v", err)
 	}
 
-	// 3. Verify job 100 status was normalized to Pending with WorkerID = 0
+	// 3. Verify job 100 status was restored to Pending
 	recoveredJob, ok := e.Job(100)
 	if !ok {
 		t.Fatalf("expected job 100 to be found after restore")
@@ -122,10 +112,6 @@ func TestEngineRecoveryWhenWorkerDiesAndServerRestarts(t *testing.T) {
 
 	if recoveredJob.Status != job.Pending {
 		t.Fatalf("expected recovered job status Pending, got %v", recoveredJob.Status)
-	}
-
-	if recoveredJob.WorkerID != 0 {
-		t.Fatalf("expected recovered job WorkerID 0, got %d", recoveredJob.WorkerID)
 	}
 
 	// 4. Verify job 100 was re-enqueued into PriorityQueue for execution
@@ -142,11 +128,7 @@ func TestEngineBulkDurabilityRecovery1000Jobs(t *testing.T) {
 	cfg := config.Default()
 	cfg.StorageType = "bolt"
 	cfg.StoragePath = dbPath
-
-	defer func() {
-		_ = os.Remove("jobs.log")
-		_ = os.Remove("snapshot.json")
-	}()
+	cfg.RaftEnabled = false
 
 	// Phase 1: Boot engine, submit 1000 jobs
 	e1, err := engine.New(cfg)

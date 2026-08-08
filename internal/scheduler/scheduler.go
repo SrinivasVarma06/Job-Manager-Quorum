@@ -2,16 +2,17 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"quorum/internal/broker"
 	"quorum/internal/config"
 	"quorum/internal/dlq"
+	"quorum/internal/events"
 	"quorum/internal/job"
 	"quorum/internal/queue"
 	"quorum/internal/retry"
-	"quorum/internal/storage"
 	"quorum/internal/store"
 	"quorum/internal/worker"
 )
@@ -21,34 +22,63 @@ type Scheduler struct {
 	DelayQueue    *queue.JobQueue
 	Available     chan worker.WorkerClient
 	Results       chan job.Result
-	WAL           *storage.WAL
 	Store         store.Store
 	DLQ           *dlq.DeadLetterQueue
 	DeadWorkers   <-chan int
 	Broker        *broker.Broker
+	Leases        *job.LeaseManager
 }
 
 func NewScheduler(
-	priorityQueue *queue.JobQueue, 
-	delayQueue *queue.JobQueue, 
-	available chan worker.WorkerClient, 
-	wal *storage.WAL, store store.Store, 
-	dlq *dlq.DeadLetterQueue, 
+	priorityQueue *queue.JobQueue,
+	delayQueue *queue.JobQueue,
+	available chan worker.WorkerClient,
+	st store.Store,
+	dlq *dlq.DeadLetterQueue,
 	deadWorkers <-chan int,
 	resultBuffer int,
 	br *broker.Broker,
-	) *Scheduler {
+) *Scheduler {
 	return &Scheduler{
 		PriorityQueue: priorityQueue,
 		DelayQueue:    delayQueue,
 		Available:     available,
 		Results:       make(chan job.Result, resultBuffer),
-		WAL:           wal,
-		Store:         store,
+		Store:         st,
 		DLQ:           dlq,
 		DeadWorkers:   deadWorkers,
 		Broker:        br,
+		Leases:        job.NewLeaseManager(),
 	}
+}
+
+// RebuildQueuesFromStore queries Pending and Scheduled jobs from Store (O(k))
+// and populates PriorityQueue and DelayQueue upon Raft leadership claim.
+func (s *Scheduler) RebuildQueuesFromStore() error {
+	pendingJobs, err := s.Store.ListByStatus(job.Pending)
+	if err != nil {
+		return err
+	}
+	for _, j := range pendingJobs {
+		s.PriorityQueue.Enqueue(j.ID)
+	}
+
+	scheduledJobs, err := s.Store.ListByStatus(job.Scheduled)
+	if err != nil {
+		return err
+	}
+	for _, j := range scheduledJobs {
+		s.DelayQueue.Enqueue(j.ID)
+	}
+
+	events.Global().Broadcast(events.Event{
+		Type:      events.EventQueueRebuilt,
+		Message:   fmt.Sprintf("Rebuilt queues from BoltDB status buckets: %d pending, %d scheduled", len(pendingJobs), len(scheduledJobs)),
+		Timestamp: time.Now(),
+	})
+
+	slog.Info("Rebuilt scheduler queues from store", "pending_count", len(pendingJobs), "scheduled_count", len(scheduledJobs))
+	return nil
 }
 
 func (s *Scheduler) Dispatch(ctx context.Context, j job.Job) bool {
@@ -73,26 +103,35 @@ func (s *Scheduler) Dispatch(ctx context.Context, j job.Job) bool {
 	}
 
 	if !ok {
-		// No capable worker currently available. Re-enqueue job.
-		j.Status = job.Pending
-		s.Store.Update(j)
+		// No worker available, re-enqueue
 		s.PriorityQueue.Enqueue(j.ID)
 		return false
 	}
 
-	j.WorkerID = w.ID()
-	j.Status = job.Running
-	s.Store.Update(j)
+	// Acquire ephemeral execution lease on active leader
+	lease, _ := s.Leases.Get(j.ID)
+	attempt := 1
+	if lease != nil {
+		attempt = lease.Attempt + 1
+	}
+
+	// Note: Term can be set from Raft leader term when available
+	s.Leases.Acquire(j.ID, w.ID(), 1, attempt)
+
+	events.Global().Broadcast(events.Event{
+		Type:      events.EventLeaseGranted,
+		Message:   fmt.Sprintf("Ephemeral lease granted for Job #%d to Worker-%d (attempt: %d)", j.ID, w.ID(), attempt),
+		Timestamp: time.Now(),
+	})
 
 	err := w.Submit(ctx, j)
 	if err != nil {
 		slog.Warn("Failed to dispatch job to worker, re-queueing", "job_id", j.ID, "worker_id", w.ID(), "error", err)
-		j.Status = job.Pending
-		j.WorkerID = 0
-		s.Store.Update(j)
+		s.Leases.Release(j.ID)
 		s.PriorityQueue.Enqueue(j.ID)
 		return false
 	}
+
 	return true
 }
 
@@ -102,15 +141,6 @@ func (s *Scheduler) Start(ctx context.Context) {
 	go s.delayLoop(ctx)
 	go s.recoveryLoop(ctx)
 	<-ctx.Done()
-}
-
-func (s *Scheduler) CreateSnapshot(snapshot *storage.Snapshot, wal *storage.WAL) error {
-	jobs := s.Store.List()
-	if err := snapshot.Save(jobs); err != nil {
-		return err
-	}
-
-	return wal.Reset()
 }
 
 func (s *Scheduler) ProcessDelayedJobs() {
@@ -130,7 +160,7 @@ func (s *Scheduler) ProcessDelayedJobs() {
 		}
 		s.DelayQueue.Dequeue()
 		j.Status = job.Pending
-		s.Store.Update(j)
+		_ = s.Store.Update(j)
 		s.PriorityQueue.Enqueue(id)
 	}
 }
@@ -153,7 +183,7 @@ func (s *Scheduler) dispatchLoop(ctx context.Context) {
 					continue
 				}
 
-				if j.Status == job.Cancelled {
+				if j.Status == job.Cancelled || j.Status == job.Completed || j.Status == job.Failed {
 					continue
 				}
 
@@ -161,7 +191,6 @@ func (s *Scheduler) dispatchLoop(ctx context.Context) {
 					if ctx.Err() != nil {
 						return
 					}
-					// If context is still active, continue trying next jobs/workers
 					continue
 				}
 			}
@@ -175,31 +204,48 @@ func (s *Scheduler) resultLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 
-		case result := <-s.Results:
+		case result, ok := <-s.Results:
+			if !ok {
+				return
+			}
+
 			j, ok := s.Store.Get(result.JobID)
 			if !ok {
 				continue
 			}
 
+			lease, hasLease := s.Leases.Get(result.JobID)
+			if hasLease && result.Attempt > 0 && result.Attempt != lease.Attempt {
+				slog.Warn("Discarding stale result from old attempt",
+					"job_id", result.JobID,
+					"result_attempt", result.Attempt,
+					"lease_attempt", lease.Attempt)
+				continue
+			}
+
+			s.Leases.Release(result.JobID)
+
 			if result.Success {
 				j.Status = job.Completed
-				s.Store.Update(j)
-				if err := s.WAL.AppendCompletion(result.JobID); err != nil {
-					panic(err)
+				if err := s.Store.Update(j); err != nil {
+					slog.Error("Failed to mark job completed", "job_id", j.ID, "error", err)
 				}
+				events.Global().Broadcast(events.Event{
+					Type:      events.EventLeaseReleased,
+					Message:   fmt.Sprintf("Job #%d executed successfully; lease released", j.ID),
+					Timestamp: time.Now(),
+				})
 				continue
 			}
 
 			if retry.ShouldRetry(j) {
 				j.RetryCount++
-				j.Status = job.Retrying
+				j.Status = job.Scheduled
 				j.LastError = result.Error.Error()
 				j.NextRunAt = retry.NextRetryTime(j, config.Default().MaxBackoff)
 
-				s.Store.Update(j)
-
-				if err := s.WAL.AppendRetry(j); err != nil {
-					panic(err)
+				if err := s.Store.Update(j); err != nil {
+					slog.Error("Failed to update retry job", "job_id", j.ID, "error", err)
 				}
 				s.DelayQueue.Enqueue(j.ID)
 				continue
@@ -207,12 +253,9 @@ func (s *Scheduler) resultLoop(ctx context.Context) {
 
 			j.Status = job.Failed
 			j.LastError = result.Error.Error()
-			s.Store.Update(j)
+			_ = s.Store.Update(j)
+			_ = s.Store.AddDLQ(j)
 			s.DLQ.Add(j)
-
-			if err := s.WAL.AppendFailure(j); err != nil {
-				panic(err)
-			}
 		}
 	}
 }
@@ -263,14 +306,13 @@ func (s *Scheduler) recoveryLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case workerID := <-s.DeadWorkers:
-			jobs := s.Store.RunningJobs(workerID)
-			slog.Warn("Processing failover for dead worker", "worker_id", workerID, "running_jobs_count", len(jobs))
-			for _, j := range jobs {
-				j.Status = job.Pending
-				j.WorkerID = 0
-				s.Store.Update(j)
-				s.PriorityQueue.Enqueue(j.ID)
-				slog.Info("Recovered job from dead worker, re-queued", "job_id", j.ID, "dead_worker_id", workerID)
+			releasedJobIDs := s.Leases.ReleaseByWorker(workerID)
+			slog.Warn("Processing failover for dead worker", "worker_id", workerID, "released_leases_count", len(releasedJobIDs))
+			for _, jobID := range releasedJobIDs {
+				if j, ok := s.Store.Get(jobID); ok && j.Status == job.Pending {
+					s.PriorityQueue.Enqueue(jobID)
+					slog.Info("Recovered lease from dead worker, re-queued", "job_id", jobID, "dead_worker_id", workerID)
+				}
 			}
 		}
 	}

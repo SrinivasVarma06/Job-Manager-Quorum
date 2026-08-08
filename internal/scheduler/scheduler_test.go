@@ -2,8 +2,8 @@ package scheduler_test
 
 import (
 	"context"
-	"os"
 	"sync"
+	"testing"
 	"time"
 
 	"quorum/internal/broker"
@@ -11,10 +11,8 @@ import (
 	"quorum/internal/job"
 	"quorum/internal/queue"
 	"quorum/internal/scheduler"
-	"quorum/internal/storage"
 	"quorum/internal/store"
 	"quorum/internal/worker"
-	"testing"
 )
 
 type mockClient struct {
@@ -55,20 +53,10 @@ func TestSchedulerDispatchWithWorkerClient(t *testing.T) {
 	deadWorkers := make(chan int, 5)
 	dead := dlq.New()
 
-	walFile := "test_scheduler.log"
-	defer os.Remove(walFile)
-
-	wal, err := storage.NewWal(walFile)
-	if err != nil {
-		t.Fatalf("failed to create wal: %v", err)
-	}
-	defer wal.Close()
-
 	s := scheduler.NewScheduler(
 		pq,
 		dq,
 		available,
-		wal,
 		jobStore,
 		dead,
 		deadWorkers,
@@ -80,7 +68,7 @@ func TestSchedulerDispatchWithWorkerClient(t *testing.T) {
 	available <- mc
 
 	j := job.NewJob(1, "email", 5)
-	jobStore.Add(j)
+	_ = jobStore.Add(j)
 
 	ctx := context.Background()
 
@@ -95,6 +83,12 @@ func TestSchedulerDispatchWithWorkerClient(t *testing.T) {
 	if mc.SubmittedJobs()[0].ID != 1 {
 		t.Fatalf("expected submitted job ID 1, got %d", mc.SubmittedJobs()[0].ID)
 	}
+
+	// Verify lease acquired on Leader
+	lease, ok := s.Leases.Get(1)
+	if !ok || lease.WorkerID != 101 {
+		t.Fatalf("expected active lease for job 1 to worker 101, got %+v", lease)
+	}
 }
 
 func TestSchedulerWorkerFailoverAndReDispatch(t *testing.T) {
@@ -106,20 +100,10 @@ func TestSchedulerWorkerFailoverAndReDispatch(t *testing.T) {
 	deadWorkers := make(chan int, 5)
 	dead := dlq.New()
 
-	walFile := "test_failover.log"
-	defer os.Remove(walFile)
-
-	wal, err := storage.NewWal(walFile)
-	if err != nil {
-		t.Fatalf("failed to create wal: %v", err)
-	}
-	defer wal.Close()
-
 	s := scheduler.NewScheduler(
 		pq,
 		dq,
 		available,
-		wal,
 		jobStore,
 		dead,
 		deadWorkers,
@@ -137,16 +121,15 @@ func TestSchedulerWorkerFailoverAndReDispatch(t *testing.T) {
 	// Start scheduler background loops
 	go s.Start(ctx)
 
-	// Job 42 was previously assigned to Worker 101 which is now dead
+	// Job 42 was previously assigned to Worker 101 with an ephemeral lease
 	j := job.NewJob(42, "data_process", 10)
-	j.Status = job.Running
-	j.WorkerID = 101
-	jobStore.Add(j)
+	_ = jobStore.Add(j)
+	s.Leases.Acquire(42, 101, 1, 1)
 
 	// Trigger worker failover signal for dead Worker 101
 	deadWorkers <- 101
 
-	// Wait for recoveryLoop to re-enqueue and dispatchLoop to send to worker 102
+	// Wait for recoveryLoop to release lease, re-enqueue, and dispatchLoop to send to worker 102
 	time.Sleep(200 * time.Millisecond)
 
 	// Verify Worker 102 received the re-dispatched job 42
@@ -159,14 +142,10 @@ func TestSchedulerWorkerFailoverAndReDispatch(t *testing.T) {
 		t.Fatalf("expected job 42 to be dispatched to worker 102, got job %d", submitted[0].ID)
 	}
 
-	// Verify job state in store reflects running on worker 102
-	updatedJob, ok := jobStore.Get(42)
-	if !ok {
-		t.Fatal("job 42 not found in store")
-	}
-
-	if updatedJob.WorkerID != 102 {
-		t.Fatalf("expected job 42 worker ID to be updated to 102, got %d", updatedJob.WorkerID)
+	// Verify new lease active for Worker 102
+	newLease, ok := s.Leases.Get(42)
+	if !ok || newLease.WorkerID != 102 {
+		t.Fatalf("expected new lease for worker 102, got %+v", newLease)
 	}
 }
 
@@ -179,15 +158,6 @@ func TestSchedulerTopicAwareRouting(t *testing.T) {
 	deadWorkers := make(chan int, 5)
 	dead := dlq.New()
 
-	walFile := "test_topic.log"
-	defer os.Remove(walFile)
-
-	wal, err := storage.NewWal(walFile)
-	if err != nil {
-		t.Fatalf("failed to create wal: %v", err)
-	}
-	defer wal.Close()
-
 	br := broker.New()
 	br.RegisterWorker(101, []string{"email"})
 	br.RegisterWorker(102, []string{"video_processing"})
@@ -196,7 +166,6 @@ func TestSchedulerTopicAwareRouting(t *testing.T) {
 		pq,
 		dq,
 		available,
-		wal,
 		jobStore,
 		dead,
 		deadWorkers,
@@ -211,7 +180,7 @@ func TestSchedulerTopicAwareRouting(t *testing.T) {
 	available <- w102
 
 	jVideo := job.NewJob(1, "video_processing", 10)
-	jobStore.Add(jVideo)
+	_ = jobStore.Add(jVideo)
 
 	ctx := context.Background()
 

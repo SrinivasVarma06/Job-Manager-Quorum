@@ -3,7 +3,7 @@ package cron
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,11 +12,11 @@ import (
 )
 
 type CronJob struct {
-	ID       string
-	Schedule string
-	Type     string
-	Priority int
-	NextRun  time.Time
+	ID       string    `json:"id"`
+	Schedule string    `json:"schedule"`
+	Type     string    `json:"type"`
+	Priority int       `json:"priority"`
+	NextRun  time.Time `json:"next_run"`
 }
 
 type SubmitFunc func(jobType string, priority int) error
@@ -83,25 +83,20 @@ func (s *Scheduler) List() []CronJob {
 }
 
 func (s *Scheduler) Start(ctx context.Context) {
-
 	ticker := time.NewTicker(s.tickDur)
 	defer ticker.Stop()
 
 	for {
 		select {
-
 		case <-ctx.Done():
 			return
 
 		case <-ticker.C:
-
 			now := time.Now()
 			due := make([]CronJob, 0)
 
 			s.mu.Lock()
-
 			for _, cj := range s.jobs {
-
 				if now.Before(cj.NextRun) {
 					continue
 				}
@@ -109,41 +104,46 @@ func (s *Scheduler) Start(ctx context.Context) {
 				cj.NextRun = nextRun(cj.Schedule, cj.NextRun)
 				due = append(due, *cj)
 			}
-
 			s.mu.Unlock()
 
 			for _, cronJob := range due {
 				if err := s.submit(cronJob.Type, cronJob.Priority); err != nil {
-					log.Printf("cron submit failed for %s: %v", cronJob.ID, err)
+					slog.Error("Cron submit failed", "cron_id", cronJob.ID, "error", err)
 				}
 			}
 		}
 	}
 }
 
+// nextRun calculates the next execution time aligned to top-of-minute wall clock boundaries.
 func nextRun(schedule string, from time.Time) time.Time {
-
 	schedule = strings.TrimSpace(schedule)
+	// Truncate to current minute
+	fromMin := from.Truncate(time.Minute)
 
 	if schedule == "* * * * *" {
-		return from.Add(time.Minute)
+		return fromMin.Add(time.Minute)
 	}
 
 	if strings.HasPrefix(schedule, "*/") {
-
 		fields := strings.Fields(schedule)
-
 		if len(fields) != 5 {
 			return time.Time{}
 		}
 
-		minutes, err := strconv.Atoi(strings.TrimPrefix(fields[0], "*/"))
-
-		if err != nil || minutes <= 0 {
+		interval, err := strconv.Atoi(strings.TrimPrefix(fields[0], "*/"))
+		if err != nil || interval <= 0 {
 			return time.Time{}
 		}
 
-		return from.Add(time.Duration(minutes) * time.Minute)
+		// Align to top-of-hour interval (e.g. 0m, 5m, 10m...)
+		currentMin := fromMin.Minute()
+		nextMin := ((currentMin / interval) + 1) * interval
+		if nextMin >= 60 {
+			// Roll over to next hour
+			return time.Date(fromMin.Year(), fromMin.Month(), fromMin.Day(), fromMin.Hour()+1, 0, 0, 0, fromMin.Location())
+		}
+		return time.Date(fromMin.Year(), fromMin.Month(), fromMin.Day(), fromMin.Hour(), nextMin, 0, 0, fromMin.Location())
 	}
 	return time.Time{}
 }

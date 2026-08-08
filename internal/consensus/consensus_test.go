@@ -25,11 +25,17 @@ func TestRaftNodeSingleNodeCluster(t *testing.T) {
 	}
 	defer rn.Close()
 
-	// Wait for single-node cluster to elect itself leader
-	time.Sleep(1500 * time.Millisecond)
-
-	if !rn.IsLeader() {
-		t.Fatalf("expected single-node Raft cluster to elect node1 as leader")
+	// Wait for single-node cluster to elect itself leader via LeaderCh
+	leaderCh := rn.LeaderCh()
+	select {
+	case isLeader := <-leaderCh:
+		if !isLeader && !rn.IsLeader() {
+			t.Fatalf("expected node1 to become leader")
+		}
+	case <-time.After(3 * time.Second):
+		if !rn.IsLeader() {
+			t.Fatalf("timed out waiting for single-node Raft cluster to elect node1 as leader")
+		}
 	}
 
 	// Propose adding a job through Raft
@@ -37,6 +43,9 @@ func TestRaftNodeSingleNodeCluster(t *testing.T) {
 	if err := rn.ProposeAddJob(j); err != nil {
 		t.Fatalf("failed to propose AddJob: %v", err)
 	}
+
+	// Wait briefly for FSM apply
+	time.Sleep(50 * time.Millisecond)
 
 	// Verify job was committed by Raft and applied to FSM store
 	retrieved, ok := memoryStore.Get(1)
@@ -49,6 +58,8 @@ func TestRaftNodeSingleNodeCluster(t *testing.T) {
 	if err := rn.ProposeUpdateJob(j); err != nil {
 		t.Fatalf("failed to propose UpdateJob: %v", err)
 	}
+
+	time.Sleep(50 * time.Millisecond)
 
 	updated, ok := memoryStore.Get(1)
 	if !ok || updated.Status != job.Completed {

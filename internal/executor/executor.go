@@ -1,7 +1,10 @@
 package executor
 
-import "quorum/internal/job"
+import (
+	"context"
+	"quorum/internal/job"
+)
 
 type Executor interface {
-	Execute(job.Job) error
+	Execute(ctx context.Context, j job.Job) error
 }

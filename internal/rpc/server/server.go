@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
+	"quorum/internal/events"
 	"quorum/internal/job"
-	workerpb "quorum/internal/rpc/proto"
 	rpcclient "quorum/internal/rpc/client"
+	workerpb "quorum/internal/rpc/proto"
 	"quorum/internal/rpc/proxy"
 	"quorum/internal/workermanager"
 )
@@ -64,6 +66,12 @@ func (s *WorkerServer) RegisterWorker(
 	s.manager.Register(remote, req.Address, req.Topics...)
 	s.manager.MakeAvailable(remote)
 
+	events.Global().Broadcast(events.Event{
+		Type:      events.EventWorkerRegistered,
+		Message:   fmt.Sprintf("Worker-%d registered at %s (topics: %v)", req.WorkerId, req.Address, req.Topics),
+		Timestamp: time.Now(),
+	})
+
 	slog.Info("Worker registered", "worker_id", req.WorkerId, "address", req.Address, "topics", req.Topics)
 	return &workerpb.RegisterWorkerResponse{Success: true}, nil
 }
@@ -98,6 +106,7 @@ func (s *WorkerServer) ReportResult(
 	result := job.Result{
 		JobID:   int(req.JobId),
 		Success: req.Success,
+		Attempt: int(req.Attempt),
 	}
 	if !req.Success {
 		result.Error = errors.New(req.Error)
@@ -115,6 +124,6 @@ func (s *WorkerServer) ReportResult(
 		s.manager.MakeAvailable(w)
 	}
 
-	slog.Debug("Result reported", "job_id", req.JobId, "worker_id", req.WorkerId, "success", req.Success)
+	slog.Debug("Result reported", "job_id", req.JobId, "worker_id", req.WorkerId, "success", req.Success, "attempt", req.Attempt)
 	return &workerpb.ReportResultResponse{Acknowledged: true}, nil
 }

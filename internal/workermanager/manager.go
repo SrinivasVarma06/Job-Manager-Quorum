@@ -7,9 +7,13 @@ import (
 	"time"
 
 	"quorum/internal/broker"
-	"quorum/internal/config"
 	"quorum/internal/worker"
 )
+
+// deadWorkersBufSize is the capacity of the DeadWorkers channel.
+// It must be > 0. In fully-distributed mode WorkerCount defaults to 0,
+// so using that as the buffer was an unintentional unbuffered channel.
+const deadWorkersBufSize = 100
 
 type WorkerInfo struct {
 	Client        worker.WorkerClient
@@ -39,7 +43,7 @@ func NewManager() *Manager {
 	return &Manager{
 		workers:     make(map[int]*WorkerInfo),
 		Available:   make(chan worker.WorkerClient, 100),
-		DeadWorkers: make(chan int, config.Default().WorkerCount),
+		DeadWorkers: make(chan int, deadWorkersBufSize),
 		Broker:      broker.New(),
 	}
 }
@@ -130,8 +134,15 @@ func (m *Manager) Heartbeat(id int) {
 	info.Alive = true
 }
 
+// Monitor polls worker liveness every timeout/2 (or 100ms, whichever is
+// smaller) so that tests with short timeouts get sub-millisecond detection
+// instead of waiting for a hardcoded 1-second tick.
 func (m *Manager) Monitor(ctx context.Context, timeout time.Duration) {
-	ticker := time.NewTicker(time.Second)
+	interval := timeout / 2
+	if interval < 100*time.Millisecond {
+		interval = 100 * time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -148,6 +159,7 @@ func (m *Manager) Monitor(ctx context.Context, timeout time.Duration) {
 						select {
 						case m.DeadWorkers <- info.Client.ID():
 						default:
+							slog.Error("DeadWorkers channel full, dropping timeout signal", "worker_id", info.Client.ID())
 						}
 					}
 				}

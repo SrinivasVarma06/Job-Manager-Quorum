@@ -35,6 +35,7 @@ message SubmitJobRequest {
   string type = 2;
   int32 priority = 3;
   int32 worker_id = 4;
+  int32 attempt = 5;
 }
 
 message SubmitJobResponse {
@@ -55,6 +56,7 @@ message ReportResultRequest {
   bool   success   = 2;
   string error     = 3;
   int32  worker_id = 4;
+  int32  attempt   = 5;
 }
 
 message ReportResultResponse {

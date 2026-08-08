@@ -9,6 +9,13 @@ type TokenBucketLimiter struct {
 }
 
 func NewTokenBucketLimiter(rate int, burst int) *TokenBucketLimiter {
+	if rate <= 0 {
+		rate = 1
+	}
+	if burst <= 0 {
+		burst = 1
+	}
+
 	l := &TokenBucketLimiter{
 		tokens: make(chan struct{}, burst),
 	}
@@ -18,7 +25,11 @@ func NewTokenBucketLimiter(rate int, burst int) *TokenBucketLimiter {
 	}
 
 	go func() {
-		ticker := time.NewTicker(time.Second / time.Duration(rate))
+		interval := time.Second / time.Duration(rate)
+		if interval <= 0 {
+			interval = time.Millisecond
+		}
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 
 		for range ticker.C {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/hashicorp/raft"
+	"quorum/internal/cron"
 	"quorum/internal/job"
 	"quorum/internal/store"
 )
@@ -14,19 +15,26 @@ import (
 type CommandType string
 
 const (
-	CmdAddJob    CommandType = "add_job"
-	CmdUpdateJob CommandType = "update_job"
-	CmdDeleteJob CommandType = "delete_job"
+	CmdAddJob        CommandType = "add_job"
+	CmdUpdateJob     CommandType = "update_job"
+	CmdDeleteJob     CommandType = "delete_job"
+	CmdCancelJob     CommandType = "cancel_job"
+	CmdAddCronJob    CommandType = "add_cron_job"
+	CmdDeleteCronJob CommandType = "delete_cron_job"
 )
 
 type Command struct {
-	Type CommandType `json:"type"`
-	Job  job.Job     `json:"job,omitempty"`
-	ID   int         `json:"id,omitempty"`
+	Type   CommandType  `json:"type"`
+	Job    job.Job      `json:"job,omitempty"`
+	ID     int          `json:"id,omitempty"`
+	Cron   cron.CronJob `json:"cron,omitempty"`
+	CronID string       `json:"cron_id,omitempty"`
 }
 
 // FSM implements the raft.FSM interface for Quorum.
-// It applies committed Raft log commands to the underlying store.Store.
+//
+// FSM writes EXCLUSIVELY to store.Store (desired state). Follower nodes do not
+// maintain dispatch queues; queue reconstruction occurs strictly on the Raft Leader.
 type FSM struct {
 	store store.Store
 }
@@ -45,16 +53,46 @@ func (f *FSM) Apply(l *raft.Log) interface{} {
 
 	switch cmd.Type {
 	case CmdAddJob:
-		f.store.Add(cmd.Job)
+		if err := f.store.Add(cmd.Job); err != nil {
+			slog.Error("FSM failed AddJob", "job_id", cmd.Job.ID, "error", err)
+			return err
+		}
 		slog.Debug("FSM applied AddJob", "job_id", cmd.Job.ID)
 
 	case CmdUpdateJob:
-		f.store.Update(cmd.Job)
+		if err := f.store.Update(cmd.Job); err != nil {
+			slog.Error("FSM failed UpdateJob", "job_id", cmd.Job.ID, "error", err)
+			return err
+		}
 		slog.Debug("FSM applied UpdateJob", "job_id", cmd.Job.ID)
 
 	case CmdDeleteJob:
-		f.store.Delete(cmd.ID)
+		if _, err := f.store.Delete(cmd.ID); err != nil {
+			slog.Error("FSM failed DeleteJob", "job_id", cmd.ID, "error", err)
+			return err
+		}
 		slog.Debug("FSM applied DeleteJob", "job_id", cmd.ID)
+
+	case CmdCancelJob:
+		if err := f.store.Cancel(cmd.ID); err != nil {
+			slog.Error("FSM failed CancelJob", "job_id", cmd.ID, "error", err)
+			return err
+		}
+		slog.Debug("FSM applied CancelJob", "job_id", cmd.ID)
+
+	case CmdAddCronJob:
+		if err := f.store.AddCron(cmd.Cron); err != nil {
+			slog.Error("FSM failed AddCronJob", "cron_id", cmd.Cron.ID, "error", err)
+			return err
+		}
+		slog.Debug("FSM applied AddCronJob", "cron_id", cmd.Cron.ID)
+
+	case CmdDeleteCronJob:
+		if _, err := f.store.DeleteCron(cmd.CronID); err != nil {
+			slog.Error("FSM failed DeleteCronJob", "cron_id", cmd.CronID, "error", err)
+			return err
+		}
+		slog.Debug("FSM applied DeleteCronJob", "cron_id", cmd.CronID)
 
 	default:
 		slog.Warn("FSM unknown command type", "type", cmd.Type)
@@ -79,7 +117,7 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 	}
 
 	for _, j := range jobs {
-		f.store.Add(j)
+		_ = f.store.Add(j)
 	}
 
 	slog.Info("FSM restored state from snapshot", "job_count", len(jobs))

@@ -22,7 +22,9 @@ func TestBoltStoreCRUD(t *testing.T) {
 
 	// 1. Add job
 	j1 := job.NewJob(1, "email", 5)
-	bs.Add(j1)
+	if err := bs.Add(j1); err != nil {
+		t.Fatalf("failed to add job 1: %v", err)
+	}
 
 	// 2. Get job
 	retrieved, ok := bs.Get(1)
@@ -34,33 +36,28 @@ func TestBoltStoreCRUD(t *testing.T) {
 	}
 
 	// 3. Update job
-	retrieved.Status = job.Running
-	retrieved.WorkerID = 101
-	bs.Update(retrieved)
+	retrieved.Status = job.Completed
+	if err := bs.Update(retrieved); err != nil {
+		t.Fatalf("failed to update job 1: %v", err)
+	}
 
 	updated, ok := bs.Get(1)
-	if !ok || updated.Status != job.Running || updated.WorkerID != 101 {
-		t.Fatalf("expected updated status Running and WorkerID 101, got %+v", updated)
+	if !ok || updated.Status != job.Completed {
+		t.Fatalf("expected updated status Completed, got %+v", updated)
 	}
 
-	// 4. List jobs
+	// 4. List jobs by status (O(k))
 	j2 := job.NewJob(2, "image_resize", 10)
-	bs.Add(j2)
+	_ = bs.Add(j2)
 
-	list := bs.List()
-	if len(list) != 2 {
-		t.Fatalf("expected list length 2, got %d", len(list))
+	pendingList, err := bs.ListByStatus(job.Pending)
+	if err != nil || len(pendingList) != 1 || pendingList[0].ID != 2 {
+		t.Fatalf("expected 1 pending job (ID 2), got %d (%v)", len(pendingList), err)
 	}
 
-	// 5. RunningJobs
-	running := bs.RunningJobs(101)
-	if len(running) != 1 || running[0].ID != 1 {
-		t.Fatalf("expected 1 running job for worker 101, got %d", len(running))
-	}
-
-	// 6. Cancel pending job
+	// 5. Cancel pending job
 	j3 := job.NewJob(3, "report", 1)
-	bs.Add(j3)
+	_ = bs.Add(j3)
 	if err := bs.Cancel(3); err != nil {
 		t.Fatalf("failed to cancel job 3: %v", err)
 	}
@@ -69,8 +66,9 @@ func TestBoltStoreCRUD(t *testing.T) {
 		t.Fatalf("expected job 3 status Cancelled, got %v", cancelled.Status)
 	}
 
-	// 7. Delete job
-	if !bs.Delete(2) {
+	// 6. Delete job
+	deleted, err := bs.Delete(2)
+	if err != nil || !deleted {
 		t.Fatalf("expected delete job 2 to return true")
 	}
 	if _, ok := bs.Get(2); ok {
@@ -90,7 +88,7 @@ func TestBoltStorePersistenceAcrossReopen(t *testing.T) {
 		}
 		j := job.NewJob(42, "payment_process", 99)
 		j.NextRunAt = time.Now().Add(5 * time.Minute)
-		bs1.Add(j)
+		_ = bs1.Add(j)
 		_ = bs1.Close()
 	}
 

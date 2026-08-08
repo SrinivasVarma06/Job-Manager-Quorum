@@ -14,7 +14,7 @@ type mockExecutor struct {
 	fail bool
 }
 
-func (m *mockExecutor) Execute(j job.Job) error {
+func (m *mockExecutor) Execute(ctx context.Context, j job.Job) error {
 	if m.fail {
 		return errors.New("mock execution failure")
 	}
@@ -47,7 +47,7 @@ func TestWorkerClientInterface(t *testing.T) {
 		}
 
 		j := job.NewJob(100, "email", 1)
-		jobStore.Add(j)
+		_ = jobStore.Add(j)
 
 		if err := client.Submit(ctx, j); err != nil {
 			t.Fatalf("submit failed: %v", err)
@@ -87,7 +87,7 @@ func TestWorkerClientFailureHandling(t *testing.T) {
 	select {
 	case client := <-available:
 		j := job.NewJob(101, "email", 1)
-		jobStore.Add(j)
+		_ = jobStore.Add(j)
 
 		if err := client.Submit(ctx, j); err != nil {
 			t.Fatalf("submit failed: %v", err)

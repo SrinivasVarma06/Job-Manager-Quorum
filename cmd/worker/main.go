@@ -108,7 +108,7 @@ func main() {
 			if result.Error != nil {
 				errMsg = result.Error.Error()
 			}
-			if err := controller.ReportResult(ctx, result.JobID, result.Success, errMsg); err != nil {
+			if err := controller.ReportResult(ctx, result.JobID, result.Attempt, result.Success, errMsg); err != nil {
 				slog.Error("ReportResult failed", "job_id", result.JobID, "error", err)
 			}
 		}

@@ -100,6 +100,7 @@ func (b *Broker) SelectWorker(jobType string, availableChan chan worker.WorkerCl
 
 	var skipped []worker.WorkerClient
 
+Loop:
 	for i := 0; i < n; i++ {
 		select {
 		case w := <-availableChan:
@@ -115,7 +116,7 @@ func (b *Broker) SelectWorker(jobType string, availableChan chan worker.WorkerCl
 			}
 			skipped = append(skipped, w)
 		default:
-			break
+			break Loop
 		}
 	}
 

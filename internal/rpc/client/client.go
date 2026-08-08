@@ -114,6 +114,7 @@ func (c *Client) Submit(ctx context.Context, j job.Job) error {
 		Type:     j.Type,
 		Priority: int32(j.Priority),
 		WorkerId: int32(c.id),
+		Attempt:  1,
 	}
 
 	resp, err := c.client.SubmitJob(ctx, req)
@@ -129,12 +130,13 @@ func (c *Client) Submit(ctx context.Context, j job.Job) error {
 }
 
 // ReportResult sends the outcome of a completed job to the control node.
-func (c *Client) ReportResult(ctx context.Context, jobID int, success bool, errMsg string) error {
+func (c *Client) ReportResult(ctx context.Context, jobID int, attempt int, success bool, errMsg string) error {
 	_, err := c.client.ReportResult(ctx, &workerpb.ReportResultRequest{
 		JobId:    int64(jobID),
 		Success:  success,
 		Error:    errMsg,
 		WorkerId: int32(c.id),
+		Attempt:  int32(attempt),
 	})
 	return err
 }

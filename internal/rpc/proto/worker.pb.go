@@ -139,6 +139,7 @@ type SubmitJobRequest struct {
 	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
 	Priority      int32                  `protobuf:"varint,3,opt,name=priority,proto3" json:"priority,omitempty"`
 	WorkerId      int32                  `protobuf:"varint,4,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	Attempt       int32                  `protobuf:"varint,5,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -197,6 +198,13 @@ func (x *SubmitJobRequest) GetPriority() int32 {
 func (x *SubmitJobRequest) GetWorkerId() int32 {
 	if x != nil {
 		return x.WorkerId
+	}
+	return 0
+}
+
+func (x *SubmitJobRequest) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
 	}
 	return 0
 }
@@ -347,6 +355,7 @@ type ReportResultRequest struct {
 	Success       bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
 	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
 	WorkerId      int32                  `protobuf:"varint,4,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	Attempt       int32                  `protobuf:"varint,5,opt,name=attempt,proto3" json:"attempt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -405,6 +414,13 @@ func (x *ReportResultRequest) GetError() string {
 func (x *ReportResultRequest) GetWorkerId() int32 {
 	if x != nil {
 		return x.WorkerId
+	}
+	return 0
+}
+
+func (x *ReportResultRequest) GetAttempt() int32 {
+	if x != nil {
+		return x.Attempt
 	}
 	return 0
 }

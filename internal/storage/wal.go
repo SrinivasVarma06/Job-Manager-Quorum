@@ -5,10 +5,16 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"sync"
+
 	"quorum/internal/job"
 )
 
+// WAL is a Write-Ahead Log for crash recovery.
+// It is safe for concurrent use — all writes are serialized via mu and fsynced
+// after each record so the OS page cache cannot silently lose entries.
 type WAL struct {
+	mu   sync.Mutex
 	file *os.File
 	path string
 }
@@ -40,14 +46,25 @@ func NewWal(path string) (*WAL, error) {
 	}, nil
 }
 
+// appendRecord serializes record as one JSON line, writes it atomically under
+// the mutex, and fsyncs the file descriptor before returning.
+// A power-loss after Write but before Sync is safe: the record is treated as
+// truncated/corrupted by Replay() and ignored, which is the standard WAL
+// recovery behaviour.
 func (w *WAL) appendRecord(record record) error {
 	data, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	_, err = w.file.Write(data)
-	return err
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if _, err = w.file.Write(data); err != nil {
+		return err
+	}
+	return w.file.Sync()
 }
 
 func (w *WAL) Append(j job.Job) error {
@@ -86,6 +103,9 @@ func (w *WAL) AppendCancel(jobID int) error {
 }
 
 func (w *WAL) Replay() ([]job.Job, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
 	pending := make(map[int]job.Job)
 
 	_, err := w.file.Seek(0, io.SeekStart)
@@ -99,30 +119,28 @@ func (w *WAL) Replay() ([]job.Job, error) {
 		var r record
 		if err := json.Unmarshal(line, &r); err == nil && r.Kind != "" {
 			switch r.Kind {
-				case "submit":
+			case "submit":
 				if r.Job != nil {
 					pending[r.Job.ID] = *r.Job
 				}
-				case "retry":
+			case "retry":
 				if r.Job != nil {
 					pending[r.Job.ID] = *r.Job
 				}
-				case "failed":
+			case "failed":
+				if r.Job != nil {
 					delete(pending, r.Job.ID)
-
-				case "cancel":
-					delete(pending, r.JobID)
-
-				case "complete":
-					delete(pending, r.JobID)
 				}
+			case "cancel":
+				delete(pending, r.JobID)
+			case "complete":
+				delete(pending, r.JobID)
+			}
 			continue
 		}
 		var legacyJob job.Job
 		if err := json.Unmarshal(line, &legacyJob); err != nil {
-			// If unmarshaling fails on a line, it indicates trailing corrupted/truncated
-			// data (e.g. from an abrupt power outage during append). We stop scanning
-			// and return all valid records read up to this point.
+			// Corrupted or truncated tail — stop and recover whatever we have.
 			break
 		}
 		pending[legacyJob.ID] = legacyJob
@@ -141,6 +159,8 @@ func (w *WAL) Replay() ([]job.Job, error) {
 }
 
 func (w *WAL) Reset() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 
 	if err := w.file.Close(); err != nil {
 		return err
@@ -154,5 +174,7 @@ func (w *WAL) Reset() error {
 }
 
 func (w *WAL) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	return w.file.Close()
 }

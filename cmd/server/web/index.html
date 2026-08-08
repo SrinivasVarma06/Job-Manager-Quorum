@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quorum — Engineering Control Plane</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="navbar">
+      <div class="brand">
+        <div class="logo-icon">Q</div>
+        <div class="brand-text">
+          <h1>QUORUM</h1>
+          <span>Distributed Job Orchestration Engine</span>
+        </div>
+      </div>
+      <div class="cluster-pill">
+        <span class="status-indicator active" id="leader-pulse"></span>
+        <span id="nav-leader-id">Leader: node-1 (Term 1)</span>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="overview">Overview</button>
+      <button class="tab-btn" data-tab="topology">Cluster Topology</button>
+      <button class="tab-btn" data-tab="explorer">Lifecycle Explorer</button>
+      <button class="tab-btn" data-tab="leases">Lease Manager</button>
+      <button class="tab-btn" data-tab="failover">Failover Simulator</button>
+      <button class="tab-btn" data-tab="reconstruct">Queue Reconstruction</button>
+      <button class="tab-btn" data-tab="broker">Broker Routing</button>
+      <button class="tab-btn" data-tab="cron">Cron Engine</button>
+      <button class="tab-btn" data-tab="dlq">DLQ</button>
+      <button class="tab-btn" data-tab="console">Job Console</button>
+      <button class="tab-btn" data-tab="events">Live Stream</button>
+      <button class="tab-btn" data-tab="metrics">Telemetry</button>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="content-body">
+      
+      <!-- Tab 1: System Overview -->
+      <section id="tab-overview" class="tab-pane active">
+        <div class="grid-cards">
+          <div class="card card-accent">
+            <h3>Leader Node</h3>
+            <div class="metric-val" id="ov-leader-node">node-1</div>
+            <div class="metric-sub">Raft Term: <span id="ov-raft-term">1</span></div>
+          </div>
+          <div class="card">
+            <h3>Controllers</h3>
+            <div class="metric-val">3 / 3</div>
+            <div class="metric-sub text-success">Healthy Quorum</div>
+          </div>
+          <div class="card">
+            <h3>Workers</h3>
+            <div class="metric-val"><span id="ov-active-workers">0</span> Active</div>
+            <div class="metric-sub text-muted"><span id="ov-dead-workers">0</span> Unreachable</div>
+          </div>
+          <div class="card">
+            <h3>Active Leases</h3>
+            <div class="metric-val" id="ov-active-leases">0</div>
+            <div class="metric-sub text-info">Ephemeral Memory Claims</div>
+          </div>
+        </div>
+
+        <div class="section-title">Persisted Desired Control State (BoltDB)</div>
+        <div class="grid-cards">
+          <div class="card mini-card">
+            <span class="label">Pending</span>
+            <span class="val text-warning" id="ov-pending-jobs">0</span>
+          </div>
+          <div class="card mini-card">
+            <span class="label">Completed</span>
+            <span class="val text-success" id="ov-completed-jobs">0</span>
+          </div>
+          <div class="card mini-card">
+            <span class="label">Failed</span>
+            <span class="val text-danger" id="ov-failed-jobs">0</span>
+          </div>
+          <div class="card mini-card">
+            <span class="label">Cancelled</span>
+            <span class="val text-muted" id="ov-cancelled-jobs">0</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 2: Cluster Topology -->
+      <section id="tab-topology" class="tab-pane">
+        <div class="card full-width">
+          <h3>Live Cluster & Worker Topology</h3>
+          <p class="subtitle">Real-time Raft consensus nodes and worker process health</p>
+          <div class="topology-canvas-container">
+            <canvas id="topology-canvas" width="900" height="350"></canvas>
+          </div>
+          <div id="nodes-list-table" class="data-table-container"></div>
+        </div>
+      </section>
+
+      <!-- Tab 3: Job Lifecycle Explorer -->
+      <section id="tab-explorer" class="tab-pane">
+        <div class="card full-width">
+          <h3>Distributed Systems Audit Timeline</h3>
+          <p class="subtitle">Millisecond audit sequence tracing state transitions</p>
+          <div class="timeline-container">
+            <div class="timeline-item">
+              <div class="t-badge submit">SUBMITTED</div>
+              <div class="t-content">
+                <strong>12:00:01.000</strong> — Job #101 (type: video_processing, priority: 10) submitted via API
+              </div>
+            </div>
+            <div class="timeline-item">
+              <div class="t-badge consensus">RAFT COMMIT</div>
+              <div class="t-content">
+                <strong>12:00:01.005</strong> — ProposeAddJob committed by Raft quorum (Term 1)
+              </div>
+            </div>
+            <div class="timeline-item">
+              <div class="t-badge store">BOLTDB STORED</div>
+              <div class="t-content">
+                <strong>12:00:01.008</strong> — FSM.Apply persisted Desired State: PENDING in BoltDB status_pending bucket
+              </div>
+            </div>
+            <div class="timeline-item">
+              <div class="t-badge lease">LEASE GRANTED</div>
+              <div class="t-content">
+                <strong>12:00:01.012</strong> — LeaseManager granted ephemeral lease to Worker-101 (Attempt 1)
+              </div>
+            </div>
+            <div class="timeline-item">
+              <div class="t-badge complete">COMPLETED</div>
+              <div class="t-content">
+                <strong>12:00:02.100</strong> — Execution result acknowledged; Lease released; Desired State set to COMPLETED
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 4: Lease Manager Visualization -->
+      <section id="tab-leases" class="tab-pane">
+        <div class="grid-split">
+          <div class="card">
+            <h3>Persisted Desired State (BoltDB)</h3>
+            <p class="subtitle">Durable across cluster restarts</p>
+            <div class="code-box">
+<span class="token-key">Status:</span> PENDING | SCHEDULED | COMPLETED | FAILED
+<span class="token-key">Backend:</span> BoltDB B-Tree Buckets via Raft Log
+            </div>
+          </div>
+          <div class="card">
+            <h3>Ephemeral Execution Leases (Leader Memory)</h3>
+            <p class="subtitle">Evaporates on leader crash or worker timeout</p>
+            <div class="code-box">
+<span class="token-key">Lease:</span> { JobID, WorkerID, Term, Attempt, StartedAt }
+<span class="token-key">Location:</span> Active Raft Leader RAM
+            </div>
+          </div>
+        </div>
+        <div class="card full-width">
+          <h3>Active Leader Execution Leases</h3>
+          <div id="leases-table" class="data-table-container"></div>
+        </div>
+      </section>
+
+      <!-- Tab 5: Failover Simulator -->
+      <section id="tab-failover" class="tab-pane">
+        <div class="card full-width text-center">
+          <h3>Raft Leader Failover Simulator</h3>
+          <p class="subtitle">Simulate leader termination to demonstrate sub-second consensus recovery</p>
+          <button id="btn-kill-leader" class="btn btn-danger btn-lg">⚡ Kill Leader (Simulate Failover)</button>
+          
+          <div class="failover-meter-container">
+            <div class="meter-step" id="f-step-1">
+              <div class="step-icon">💥</div>
+              <div>Leader Crashed</div>
+              <small>0ms</small>
+            </div>
+            <div class="meter-step" id="f-step-2">
+              <div class="step-icon">🗳️</div>
+              <div>Raft Election</div>
+              <small>200ms</small>
+            </div>
+            <div class="meter-step" id="f-step-3">
+              <div class="step-icon">👑</div>
+              <div>New Leader</div>
+              <small>600ms</small>
+            </div>
+            <div class="meter-step" id="f-step-4">
+              <div class="step-icon">⚡</div>
+              <div>Queue Rebuild</div>
+              <small>800ms</small>
+            </div>
+            <div class="meter-step" id="f-step-5">
+              <div class="step-icon">🔄</div>
+              <div>Workers Re-register</div>
+              <small>1000ms</small>
+            </div>
+            <div class="meter-step" id="f-step-6">
+              <div class="step-icon">✅</div>
+              <div>Dispatch Resumed</div>
+              <small>1200ms</small>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 6: Queue Reconstruction Viewer -->
+      <section id="tab-reconstruct" class="tab-pane">
+        <div class="card full-width">
+          <h3>O(k) Status Bucket Queue Reconstruction</h3>
+          <p class="subtitle">Startup queue reconstruction from status buckets without WAL replay</p>
+          <div class="reconstruct-diagram">
+            <div class="bucket-box">
+              <h4>status_pending Bucket</h4>
+              <div class="bucket-val" id="reconstruct-pending-val">Scanning O(k)...</div>
+            </div>
+            <div class="arrow-right">➔</div>
+            <div class="bucket-box highlight">
+              <h4>PriorityQueue (Heap)</h4>
+              <div class="bucket-val">Reconstructed Priority Heap</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 7: Broker Routing View -->
+      <section id="tab-broker" class="tab-pane">
+        <div class="card full-width">
+          <h3>Topic Capability Broker Matcher</h3>
+          <p class="subtitle">Matching job types to subscribed worker topic capabilities</p>
+          <div id="broker-topic-list" class="broker-grid"></div>
+        </div>
+      </section>
+
+      <!-- Tab 8: Cron Engine -->
+      <section id="tab-cron" class="tab-pane">
+        <div class="card full-width">
+          <h3>Recurring Cron Schedules</h3>
+          <div id="cron-list-table" class="data-table-container"></div>
+        </div>
+      </section>
+
+      <!-- Tab 9: DLQ Dashboard -->
+      <section id="tab-dlq" class="tab-pane">
+        <div class="card full-width">
+          <h3>Dead Letter Queue (DLQ)</h3>
+          <div id="dlq-list-table" class="data-table-container"></div>
+        </div>
+      </section>
+
+      <!-- Tab 10: Job Console -->
+      <section id="tab-console" class="tab-pane">
+        <div class="card full-width">
+          <div class="console-controls">
+            <input type="text" id="console-search" placeholder="Search by Job ID or Type..." class="input-text">
+            <select id="console-filter-status" class="input-select">
+              <option value="ALL">All Statuses</option>
+              <option value="PENDING">PENDING</option>
+              <option value="SCHEDULED">SCHEDULED</option>
+              <option value="COMPLETED">COMPLETED</option>
+              <option value="FAILED">FAILED</option>
+              <option value="CANCELLED">CANCELLED</option>
+            </select>
+          </div>
+          <div id="job-console-table" class="data-table-container"></div>
+        </div>
+      </section>
+
+      <!-- Tab 11: Live Event Stream -->
+      <section id="tab-events" class="tab-pane">
+        <div class="card full-width">
+          <h3>Real-time Cluster Event Broadcaster (tail -f)</h3>
+          <div id="event-stream-log" class="terminal-log">
+            <div class="log-line text-muted">[SYSTEM] Connecting to SSE Event Stream...</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 12: Telemetry -->
+      <section id="tab-metrics" class="tab-pane">
+        <div class="card full-width">
+          <h3>Prometheus Metrics (/metrics)</h3>
+          <pre id="prometheus-raw" class="code-box"></pre>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

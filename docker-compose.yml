@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  node-1:
+    build: .
+    container_name: quorum-node-1
+    command: /app/quorum-server
+    environment:
+      - RAFT_NODE_ID=node-1
+      - RAFT_ADDR=node-1:18088
+      - RAFT_DATA_DIR=/app/data/node-1
+      - CONTROLLER_GRPC_PORT=50051
+      - STORAGE_PATH=/app/data/node-1/quorum.db
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+      - "18088:18088"
+    volumes:
+      - node1_data:/app/data
+
+  node-2:
+    build: .
+    container_name: quorum-node-2
+    command: /app/quorum-server
+    environment:
+      - RAFT_NODE_ID=node-2
+      - RAFT_ADDR=node-2:18088
+      - RAFT_DATA_DIR=/app/data/node-2
+      - CONTROLLER_GRPC_PORT=50051
+      - STORAGE_PATH=/app/data/node-2/quorum.db
+    ports:
+      - "8081:8080"
+      - "50052:50051"
+      - "18089:18088"
+    volumes:
+      - node2_data:/app/data
+
+  node-3:
+    build: .
+    container_name: quorum-node-3
+    command: /app/quorum-server
+    environment:
+      - RAFT_NODE_ID=node-3
+      - RAFT_ADDR=node-3:18088
+      - RAFT_DATA_DIR=/app/data/node-3
+      - CONTROLLER_GRPC_PORT=50051
+      - STORAGE_PATH=/app/data/node-3/quorum.db
+    ports:
+      - "8082:8080"
+      - "50053:50051"
+      - "18090:18088"
+    volumes:
+      - node3_data:/app/data
+
+  worker-1:
+    build: .
+    container_name: quorum-worker-1
+    command: /app/quorum-worker -id=1 -controller=node-1:50051 -topics=email,video_processing
+    depends_on:
+      - node-1
+
+  worker-2:
+    build: .
+    container_name: quorum-worker-2
+    command: /app/quorum-worker -id=2 -controller=node-1:50051 -topics=*
+    depends_on:
+      - node-1
+
+volumes:
+  node1_data:
+  node2_data:
+  node3_data:

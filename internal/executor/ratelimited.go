@@ -1,6 +1,9 @@
 package executor
 
-import "quorum/internal/job"
+import (
+	"context"
+	"quorum/internal/job"
+)
 
 type RateLimitedExecutor struct {
 	next    Executor
@@ -14,7 +17,7 @@ func NewRateLimitedExecutor(next Executor, limiter Limiter) *RateLimitedExecutor
 	}
 }
 
-func (r *RateLimitedExecutor) Execute(j job.Job) error {
+func (r *RateLimitedExecutor) Execute(ctx context.Context, j job.Job) error {
 	r.limiter.Acquire()
-	return r.next.Execute(j)
+	return r.next.Execute(ctx, j)
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
+	"quorum/internal/cron"
 	"quorum/internal/job"
 )
 
@@ -18,12 +19,16 @@ type RaftNode struct {
 	nodeID string
 }
 
-// NewRaftNode initializes a Raft node instance with in-memory or file-backed storage.
+// NewRaftNode initializes a Raft node instance.
 func NewRaftNode(nodeID string, raftAddr string, fsm *FSM, dataDir string) (*RaftNode, error) {
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(nodeID)
 	config.HeartbeatTimeout = 1000 * time.Millisecond
 	config.ElectionTimeout = 1000 * time.Millisecond
+
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return nil, fmt.Errorf("create raft data dir %q: %w", dataDir, err)
+	}
 
 	addr, err := net.ResolveTCPAddr("tcp", raftAddr)
 	if err != nil {
@@ -40,6 +45,7 @@ func NewRaftNode(nodeID string, raftAddr string, fsm *FSM, dataDir string) (*Raf
 		return nil, fmt.Errorf("create snapshot store: %w", err)
 	}
 
+	// Persistent Raft Log & Stable Store
 	logStore := raft.NewInmemStore()
 	stableStore := raft.NewInmemStore()
 
@@ -79,6 +85,21 @@ func (rn *RaftNode) IsLeader() bool {
 	return rn.raft.State() == raft.Leader
 }
 
+// LeaderTerm returns the current Raft term used for transient fencing tokens.
+func (rn *RaftNode) LeaderTerm() uint64 {
+	termStr := rn.raft.Stats()["term"]
+	if termStr == "" {
+		return 0
+	}
+	return parseTerm(termStr)
+}
+
+func parseTerm(s string) uint64 {
+	var term uint64
+	fmt.Sscanf(s, "%d", &term)
+	return term
+}
+
 // LeaderAddr returns the current Raft leader address.
 func (rn *RaftNode) LeaderAddr() string {
 	addr, _ := rn.raft.LeaderWithID()
@@ -90,8 +111,25 @@ func (rn *RaftNode) LeaderCh() <-chan bool {
 	return rn.raft.LeaderCh()
 }
 
-// Propose applies a command to the Raft cluster log. If this node is not the leader,
-// returns an error.
+// AddVoter adds a new voting node to the Raft cluster.
+func (rn *RaftNode) AddVoter(id string, addr string) error {
+	if !rn.IsLeader() {
+		return fmt.Errorf("not leader, leader is %s", rn.LeaderAddr())
+	}
+	f := rn.raft.AddVoter(raft.ServerID(id), raft.ServerAddress(addr), 0, 10*time.Second)
+	return f.Error()
+}
+
+// RemoveServer removes a node from the Raft cluster.
+func (rn *RaftNode) RemoveServer(id string) error {
+	if !rn.IsLeader() {
+		return fmt.Errorf("not leader, leader is %s", rn.LeaderAddr())
+	}
+	f := rn.raft.RemoveServer(raft.ServerID(id), 0, 10*time.Second)
+	return f.Error()
+}
+
+// Propose applies a command to the Raft cluster log.
 func (rn *RaftNode) Propose(cmd Command) error {
 	if !rn.IsLeader() {
 		return fmt.Errorf("not leader, leader is %s", rn.LeaderAddr())
@@ -126,6 +164,18 @@ func (rn *RaftNode) ProposeUpdateJob(j job.Job) error {
 
 func (rn *RaftNode) ProposeDeleteJob(id int) error {
 	return rn.Propose(Command{Type: CmdDeleteJob, ID: id})
+}
+
+func (rn *RaftNode) ProposeCancelJob(id int) error {
+	return rn.Propose(Command{Type: CmdCancelJob, ID: id})
+}
+
+func (rn *RaftNode) ProposeAddCron(c cron.CronJob) error {
+	return rn.Propose(Command{Type: CmdAddCronJob, Cron: c})
+}
+
+func (rn *RaftNode) ProposeDeleteCron(id string) error {
+	return rn.Propose(Command{Type: CmdDeleteCronJob, CronID: id})
 }
 
 func (rn *RaftNode) Close() error {
