@@ -3,12 +3,12 @@ package engine_test
 import (
 	"fmt"
 	"path/filepath"
-	"testing"
-
 	"quorum/internal/config"
 	"quorum/internal/engine"
 	"quorum/internal/job"
 	"quorum/internal/store"
+	"testing"
+	"time"
 )
 
 func TestEngineRestoreWithBoltStore(t *testing.T) {
@@ -176,5 +176,269 @@ func TestEngineBulkDurabilityRecovery1000Jobs(t *testing.T) {
 
 	if j1001.ID != 1001 {
 		t.Fatalf("expected next job ID to be 1001, got %d", j1001.ID)
+	}
+}
+
+func TestEngineRestoreScheduledJobsToDelayQueue(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "scheduled.db")
+
+	cfg := config.Default()
+	cfg.StorageType = "bolt"
+	cfg.StoragePath = dbPath
+
+	e1, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runAt := time.Now().Add(10 * time.Minute)
+
+	j, err := e1.SubmitJobAt(
+		"scheduled_task",
+		10,
+		runAt,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = e1.Stop()
+
+	e2, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e2.Stop()
+
+	if err := e2.Restore(); err != nil {
+		t.Fatal(err)
+	}
+
+	id, ok := e2.DelayQueue.Dequeue()
+	if !ok {
+		t.Fatal("expected scheduled job in delay queue")
+	}
+
+	if id != j.ID {
+		t.Fatalf("expected %d got %d", j.ID, id)
+	}
+}
+
+func TestEngineRestoreCancelledJobsNotQueued(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "cancelled.db")
+
+	cfg := config.Default()
+	cfg.StorageType = "bolt"
+	cfg.StoragePath = dbPath
+
+	bs, _ := store.NewBoltStore(dbPath)
+
+	j := job.NewJob(1, "email", 1)
+	j.Status = job.Cancelled
+
+	_ = bs.Add(j)
+	_ = bs.Close()
+
+	e, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+
+	if err := e.Restore(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, ok := e.PriorityQueue.Dequeue()
+
+	if ok {
+		t.Fatal("cancelled job should not be queued")
+	}
+}
+
+func TestEngineRestoreCompletedJobsNotQueued(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "completed.db")
+
+	cfg := config.Default()
+	cfg.StorageType = "bolt"
+	cfg.StoragePath = dbPath
+
+	bs, _ := store.NewBoltStore(dbPath)
+
+	j := job.NewJob(1, "email", 1)
+	j.Status = job.Completed
+
+	_ = bs.Add(j)
+	_ = bs.Close()
+
+	e, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+
+	if err := e.Restore(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, ok := e.PriorityQueue.Dequeue()
+
+	if ok {
+		t.Fatal("completed job should not be queued")
+	}
+}
+
+func TestEngineRestoreFailedJobsNotQueued(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "failed.db")
+
+	cfg := config.Default()
+	cfg.StorageType = "bolt"
+	cfg.StoragePath = dbPath
+
+	bs, _ := store.NewBoltStore(dbPath)
+
+	j := job.NewJob(1, "email", 1)
+	j.Status = job.Failed
+
+	_ = bs.Add(j)
+	_ = bs.Close()
+
+	e, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+
+	if err := e.Restore(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, ok := e.PriorityQueue.Dequeue()
+
+	if ok {
+		t.Fatal("failed job should not be queued")
+	}
+}
+
+func TestEngineRestoreEmptyDatabase(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "empty.db")
+
+	cfg := config.Default()
+	cfg.StorageType = "bolt"
+	cfg.StoragePath = dbPath
+
+	e, err := engine.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Stop()
+
+	if err := e.Restore(); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(e.Jobs()) != 0 {
+		t.Fatalf("expected 0 jobs got %d", len(e.Jobs()))
+	}
+}
+
+func TestEngineMultipleRestarts(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "multi.db")
+
+	cfg := config.Default()
+	cfg.StorageType = "bolt"
+	cfg.StoragePath = dbPath
+
+	e1, _ := engine.New(cfg)
+
+	for i := 0; i < 50; i++ {
+		_, _ = e1.SubmitJob("email", 1)
+	}
+
+	_ = e1.Stop()
+
+	for i := 0; i < 5; i++ {
+		e, err := engine.New(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := e.Restore(); err != nil {
+			t.Fatal(err)
+		}
+
+		if len(e.Jobs()) != 50 {
+			t.Fatalf("restart %d lost jobs", i)
+		}
+
+		_ = e.Stop()
+	}
+}
+
+func TestEngineCancelPersistsAcrossRestart(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "cancelpersist.db")
+
+	cfg := config.Default()
+	cfg.StorageType = "bolt"
+	cfg.StoragePath = dbPath
+
+	e1, _ := engine.New(cfg)
+
+	j, _ := e1.SubmitJob("email", 1)
+
+	if err := e1.CancelJob(j.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = e1.Stop()
+
+	e2, _ := engine.New(cfg)
+	defer e2.Stop()
+
+	_ = e2.Restore()
+
+	recovered, ok := e2.Job(j.ID)
+
+	if !ok {
+		t.Fatal("job missing")
+	}
+
+	if recovered.Status != job.Cancelled {
+		t.Fatalf("expected cancelled got %v", recovered.Status)
+	}
+}
+
+func TestEngineDeletePersistsAcrossRestart(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "deletepersist.db")
+
+	cfg := config.Default()
+	cfg.StorageType = "bolt"
+	cfg.StoragePath = dbPath
+
+	e1, _ := engine.New(cfg)
+
+	j, _ := e1.SubmitJob("email", 1)
+
+	e1.DeleteJob(j.ID)
+
+	_ = e1.Stop()
+
+	e2, _ := engine.New(cfg)
+	defer e2.Stop()
+
+	_ = e2.Restore()
+
+	_, ok := e2.Job(j.ID)
+
+	if ok {
+		t.Fatal("deleted job should not exist")
 	}
 }

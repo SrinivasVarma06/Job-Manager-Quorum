@@ -2,10 +2,7 @@ package scheduler_test
 
 import (
 	"context"
-	"sync"
-	"testing"
-	"time"
-
+	"errors"
 	"quorum/internal/broker"
 	"quorum/internal/dlq"
 	"quorum/internal/job"
@@ -13,6 +10,9 @@ import (
 	"quorum/internal/scheduler"
 	"quorum/internal/store"
 	"quorum/internal/worker"
+	"sync"
+	"testing"
+	"time"
 )
 
 type mockClient struct {
@@ -195,5 +195,266 @@ func TestSchedulerTopicAwareRouting(t *testing.T) {
 
 	if len(w101.SubmittedJobs()) != 0 {
 		t.Fatalf("expected worker 101 to receive 0 jobs, got %d", len(w101.SubmittedJobs()))
+	}
+}
+
+func TestSchedulerResultSuccessMarksCompleted(t *testing.T) {
+	jobStore := store.NewJobStore()
+
+	pq := queue.NewJobQueue(jobStore, queue.PriorityComparator)
+	dq := queue.NewJobQueue(jobStore, queue.DelayComparator)
+
+	available := make(chan worker.WorkerClient, 1)
+	deadWorkers := make(chan int, 1)
+
+	s := scheduler.NewScheduler(
+		pq,
+		dq,
+		available,
+		jobStore,
+		dlq.New(),
+		deadWorkers,
+		10,
+		nil,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go s.Start(ctx)
+
+	j := job.NewJob(1, "email", 5)
+	_ = jobStore.Add(j)
+
+	s.Leases.Acquire(1, 101, 1, 1)
+
+	s.Results <- job.Result{
+		JobID:   1,
+		Success: true,
+		Attempt: 1,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	updated, _ := jobStore.Get(1)
+
+	if updated.Status != job.Completed {
+		t.Fatalf("expected COMPLETED got %v", updated.Status)
+	}
+
+	if _, ok := s.Leases.Get(1); ok {
+		t.Fatal("lease should be released")
+	}
+}
+
+func TestSchedulerRetryMovesJobToScheduled(t *testing.T) {
+	jobStore := store.NewJobStore()
+
+	pq := queue.NewJobQueue(jobStore, queue.PriorityComparator)
+	dq := queue.NewJobQueue(jobStore, queue.DelayComparator)
+
+	s := scheduler.NewScheduler(
+		pq,
+		dq,
+		make(chan worker.WorkerClient, 1),
+		jobStore,
+		dlq.New(),
+		make(chan int, 1),
+		10,
+		nil,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go s.Start(ctx)
+
+	j := job.NewJob(1, "email", 5)
+	j.MaxRetries = 3
+
+	_ = jobStore.Add(j)
+
+	s.Leases.Acquire(1, 101, 1, 1)
+
+	s.Results <- job.Result{
+		JobID:   1,
+		Success: false,
+		Error:   errors.New("temporary failure"),
+		Attempt: 1,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	updated, _ := jobStore.Get(1)
+
+	if updated.Status != job.Scheduled {
+		t.Fatalf("expected SCHEDULED got %v", updated.Status)
+	}
+
+	if updated.RetryCount != 1 {
+		t.Fatalf("expected retry count 1 got %d", updated.RetryCount)
+	}
+}
+
+func TestSchedulerFailedJobGoesToDLQ(t *testing.T) {
+	jobStore := store.NewJobStore()
+
+	dead := dlq.New()
+
+	s := scheduler.NewScheduler(
+		queue.NewJobQueue(jobStore, queue.PriorityComparator),
+		queue.NewJobQueue(jobStore, queue.DelayComparator),
+		make(chan worker.WorkerClient, 1),
+		jobStore,
+		dead,
+		make(chan int, 1),
+		10,
+		nil,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go s.Start(ctx)
+
+	j := job.NewJob(1, "email", 5)
+
+	j.MaxRetries = 0
+
+	_ = jobStore.Add(j)
+
+	s.Leases.Acquire(1, 101, 1, 1)
+
+	s.Results <- job.Result{
+		JobID:   1,
+		Success: false,
+		Error:   errors.New("permanent failure"),
+		Attempt: 1,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	updated, _ := jobStore.Get(1)
+
+	if updated.Status != job.Failed {
+		t.Fatalf("expected FAILED got %v", updated.Status)
+	}
+
+	dlqJobs, _ := jobStore.ListDLQ()
+
+	if len(dlqJobs) != 1 {
+		t.Fatalf("expected 1 DLQ job got %d", len(dlqJobs))
+	}
+}
+
+func TestSchedulerRejectsStaleResults(t *testing.T) {
+	jobStore := store.NewJobStore()
+
+	s := scheduler.NewScheduler(
+		queue.NewJobQueue(jobStore, queue.PriorityComparator),
+		queue.NewJobQueue(jobStore, queue.DelayComparator),
+		make(chan worker.WorkerClient, 1),
+		jobStore,
+		dlq.New(),
+		make(chan int, 1),
+		10,
+		nil,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go s.Start(ctx)
+
+	j := job.NewJob(1, "email", 5)
+
+	_ = jobStore.Add(j)
+
+	// Attempt 2 currently owns lease
+	s.Leases.Acquire(1, 102, 1, 2)
+
+	// Old worker reports attempt 1
+	s.Results <- job.Result{
+		JobID:   1,
+		Success: true,
+		Attempt: 1,
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	updated, _ := jobStore.Get(1)
+
+	if updated.Status == job.Completed {
+		t.Fatal("stale result should not complete job")
+	}
+}
+
+func TestProcessDelayedJobsMovesToPending(t *testing.T) {
+	jobStore := store.NewJobStore()
+
+	s := scheduler.NewScheduler(
+		queue.NewJobQueue(jobStore, queue.PriorityComparator),
+		queue.NewJobQueue(jobStore, queue.DelayComparator),
+		make(chan worker.WorkerClient, 1),
+		jobStore,
+		dlq.New(),
+		make(chan int, 1),
+		10,
+		nil,
+	)
+
+	j := job.NewJob(1, "email", 5)
+
+	j.Status = job.Scheduled
+	j.NextRunAt = time.Now().Add(-time.Second)
+
+	_ = jobStore.Add(j)
+
+	s.DelayQueue.Enqueue(j.ID)
+
+	s.ProcessDelayedJobs()
+
+	updated, _ := jobStore.Get(1)
+
+	if updated.Status != job.Pending {
+		t.Fatalf("expected PENDING got %v", updated.Status)
+	}
+}
+
+func TestRebuildQueuesFromStore(t *testing.T) {
+	jobStore := store.NewJobStore()
+
+	pending := job.NewJob(1, "email", 5)
+
+	scheduled := job.NewJob(2, "report", 5)
+	scheduled.Status = job.Scheduled
+
+	_ = jobStore.Add(pending)
+	_ = jobStore.Add(scheduled)
+
+	pq := queue.NewJobQueue(jobStore, queue.PriorityComparator)
+	dq := queue.NewJobQueue(jobStore, queue.DelayComparator)
+
+	s := scheduler.NewScheduler(
+		pq,
+		dq,
+		make(chan worker.WorkerClient, 1),
+		jobStore,
+		dlq.New(),
+		make(chan int, 1),
+		10,
+		nil,
+	)
+
+	if err := s.RebuildQueuesFromStore(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok := pq.Peek(); !ok {
+		t.Fatal("pending queue not rebuilt")
+	}
+
+	if _, ok := dq.Peek(); !ok {
+		t.Fatal("delay queue not rebuilt")
 	}
 }

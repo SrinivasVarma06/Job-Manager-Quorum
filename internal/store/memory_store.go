@@ -31,6 +31,10 @@ func (s *MemoryStore) Add(j job.Job) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if _, exists := s.jobs[j.ID]; exists {
+		return fmt.Errorf("job %d already exists", j.ID)
+	}
+
 	s.jobs[j.ID] = j
 	s.addToStatusIndex(j.Status, j.ID)
 	return nil
