@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"quorum/internal/tracing"
 )
 
 // responseWriter wraps http.ResponseWriter to capture the HTTP status code
@@ -26,12 +28,15 @@ func Logging(next http.Handler) http.Handler {
 		start := time.Now()
 		rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 		next.ServeHTTP(rw, r)
-		slog.Info("HTTP request",
+
+		args := []any{
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", rw.statusCode,
 			"duration", time.Since(start),
 			"request_id", RequestIDFromContext(r.Context()),
-		)
+		}
+		args = append(args, tracing.TraceFields(r.Context())...)
+		slog.Info("HTTP request", args...)
 	})
 }

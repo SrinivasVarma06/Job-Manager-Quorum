@@ -6,6 +6,9 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+
 	"quorum/internal/broker"
 	"quorum/internal/config"
 	"quorum/internal/dlq"
@@ -14,6 +17,7 @@ import (
 	"quorum/internal/queue"
 	"quorum/internal/retry"
 	"quorum/internal/store"
+	"quorum/internal/tracing"
 	"quorum/internal/worker"
 )
 
@@ -60,7 +64,7 @@ func (s *Scheduler) RebuildQueuesFromStore() error {
 		return err
 	}
 	for _, j := range pendingJobs {
-		s.PriorityQueue.Enqueue(j.ID)
+		s.enqueueJob(j.ID, s.PriorityQueue)
 	}
 
 	scheduledJobs, err := s.Store.ListByStatus(job.Scheduled)
@@ -68,7 +72,7 @@ func (s *Scheduler) RebuildQueuesFromStore() error {
 		return err
 	}
 	for _, j := range scheduledJobs {
-		s.DelayQueue.Enqueue(j.ID)
+		s.enqueueJob(j.ID, s.DelayQueue)
 	}
 
 	events.Global().Broadcast(events.Event{
@@ -81,9 +85,50 @@ func (s *Scheduler) RebuildQueuesFromStore() error {
 	return nil
 }
 
+func (s *Scheduler) enqueueJob(jobID int, q *queue.JobQueue) {
+	_, span := tracing.Tracer().Start(context.Background(), "scheduler.enqueue")
+	defer span.End()
+
+	if j, ok := s.Store.Get(jobID); ok {
+		span.SetAttributes(
+			attribute.Int("job.id", j.ID),
+			attribute.String("job.type", j.Type),
+			attribute.Int("job.priority", j.Priority),
+		)
+	} else {
+		span.SetAttributes(attribute.Int("job.id", jobID))
+	}
+
+	q.Enqueue(jobID)
+	span.SetStatus(codes.Ok, "")
+}
+
+func schedulingWaitTimeMs(j job.Job) int64 {
+	if j.NextRunAt.IsZero() {
+		return 0
+	}
+	wait := time.Since(j.NextRunAt)
+	if wait < 0 {
+		return 0
+	}
+	return wait.Milliseconds()
+}
+
 func (s *Scheduler) Dispatch(ctx context.Context, j job.Job) bool {
+	_, span := tracing.Tracer().Start(ctx, "scheduler.dispatch")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.Int("job.id", j.ID),
+		attribute.String("job.type", j.Type),
+		attribute.Int("job.priority", j.Priority),
+		attribute.Int64("scheduler.wait_time_ms", schedulingWaitTimeMs(j)),
+	)
+
 	select {
 	case <-ctx.Done():
+		span.RecordError(ctx.Err())
+		span.SetStatus(codes.Error, ctx.Err().Error())
 		return false
 	default:
 	}
@@ -104,7 +149,8 @@ func (s *Scheduler) Dispatch(ctx context.Context, j job.Job) bool {
 
 	if !ok {
 		// No worker available, re-enqueue
-		s.PriorityQueue.Enqueue(j.ID)
+		s.enqueueJob(j.ID, s.PriorityQueue)
+		span.SetStatus(codes.Ok, "")
 		return false
 	}
 
@@ -126,12 +172,15 @@ func (s *Scheduler) Dispatch(ctx context.Context, j job.Job) bool {
 
 	err := w.Submit(ctx, j)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		slog.Warn("Failed to dispatch job to worker, re-queueing", "job_id", j.ID, "worker_id", w.ID(), "error", err)
 		s.Leases.Release(j.ID)
-		s.PriorityQueue.Enqueue(j.ID)
+		s.enqueueJob(j.ID, s.PriorityQueue)
 		return false
 	}
 
+	span.SetStatus(codes.Ok, "")
 	return true
 }
 
@@ -159,9 +208,25 @@ func (s *Scheduler) ProcessDelayedJobs() {
 			return
 		}
 		s.DelayQueue.Dequeue()
+
+		_, span := tracing.Tracer().Start(context.Background(), "scheduler.promote_delayed_job")
+		span.SetAttributes(
+			attribute.Int("job.id", j.ID),
+			attribute.String("job.type", j.Type),
+			attribute.Int("job.priority", j.Priority),
+			attribute.Int64("scheduler.wait_time_ms", schedulingWaitTimeMs(j)),
+		)
+
 		j.Status = job.Pending
-		_ = s.Store.Update(j)
-		s.PriorityQueue.Enqueue(id)
+		if err := s.Store.Update(j); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			span.End()
+			continue
+		}
+		s.enqueueJob(id, s.PriorityQueue)
+		span.SetStatus(codes.Ok, "")
+		span.End()
 	}
 }
 
@@ -247,7 +312,7 @@ func (s *Scheduler) resultLoop(ctx context.Context) {
 				if err := s.Store.Update(j); err != nil {
 					slog.Error("Failed to update retry job", "job_id", j.ID, "error", err)
 				}
-				s.DelayQueue.Enqueue(j.ID)
+				s.enqueueJob(j.ID, s.DelayQueue)
 				continue
 			}
 
@@ -310,7 +375,7 @@ func (s *Scheduler) recoveryLoop(ctx context.Context) {
 			slog.Warn("Processing failover for dead worker", "worker_id", workerID, "released_leases_count", len(releasedJobIDs))
 			for _, jobID := range releasedJobIDs {
 				if j, ok := s.Store.Get(jobID); ok && j.Status == job.Pending {
-					s.PriorityQueue.Enqueue(jobID)
+					s.enqueueJob(jobID, s.PriorityQueue)
 					slog.Info("Recovered lease from dead worker, re-queued", "job_id", jobID, "dead_worker_id", workerID)
 				}
 			}

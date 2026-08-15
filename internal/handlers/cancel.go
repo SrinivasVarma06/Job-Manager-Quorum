@@ -18,7 +18,7 @@ func CancelJobHandler(e *engine.Engine) http.HandlerFunc {
 			return
 		}
 
-		if err := e.CancelJob(id); err != nil {
+		if err := e.CancelJobWithContext(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}

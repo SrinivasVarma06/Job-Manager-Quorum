@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"quorum/internal/config"
 	"quorum/internal/consensus"
 	"quorum/internal/cron"
@@ -16,9 +18,11 @@ import (
 	"quorum/internal/events"
 	"quorum/internal/executor"
 	"quorum/internal/job"
+	"quorum/internal/metrics"
 	"quorum/internal/queue"
 	"quorum/internal/scheduler"
 	"quorum/internal/store"
+	"quorum/internal/tracing"
 	"quorum/internal/worker"
 	"quorum/internal/workermanager"
 )
@@ -243,19 +247,39 @@ func (e *Engine) Restore() error {
 }
 
 func (e *Engine) SubmitJob(jobType string, priority int) (job.Job, error) {
+	return e.SubmitJobWithContext(context.Background(), jobType, priority)
+}
+
+func (e *Engine) SubmitJobWithContext(ctx context.Context, jobType string, priority int) (job.Job, error) {
+	_, span := tracing.Tracer().Start(ctx, "engine.submit_job")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("job.type", jobType),
+		attribute.Int("job.priority", priority),
+	)
+
 	id := int(e.nextJobID.Add(1))
 	j := job.NewJob(id, jobType, priority)
 
 	if e.RaftNode != nil {
 		if err := e.RaftNode.ProposeAddJob(j); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return job.Job{}, fmt.Errorf("raft propose add_job failed: %w", err)
 		}
 	} else {
 		if err := e.JobStore.Add(j); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return job.Job{}, err
 		}
 		e.PriorityQueue.Enqueue(j.ID)
 	}
+
+	span.SetAttributes(attribute.Int("job.id", j.ID))
+
+	metrics.JobsSubmitted.Inc()
 
 	events.Global().Broadcast(events.Event{
 		Type:      events.EventJobSubmitted,
@@ -263,10 +287,24 @@ func (e *Engine) SubmitJob(jobType string, priority int) (job.Job, error) {
 		Timestamp: time.Now(),
 	})
 
+	span.SetStatus(codes.Ok, "")
 	return j, nil
 }
 
 func (e *Engine) SubmitJobAt(jobType string, priority int, runAt time.Time) (job.Job, error) {
+	return e.SubmitJobAtWithContext(context.Background(), jobType, priority, runAt)
+}
+
+func (e *Engine) SubmitJobAtWithContext(ctx context.Context, jobType string, priority int, runAt time.Time) (job.Job, error) {
+	_, span := tracing.Tracer().Start(ctx, "engine.submit_job_at")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("job.type", jobType),
+		attribute.Int("job.priority", priority),
+		attribute.String("job.scheduled_at", runAt.Format(time.RFC3339)),
+	)
+
 	id := int(e.nextJobID.Add(1))
 	j := job.NewJob(id, jobType, priority)
 	j.Status = job.Scheduled
@@ -274,15 +312,21 @@ func (e *Engine) SubmitJobAt(jobType string, priority int, runAt time.Time) (job
 
 	if e.RaftNode != nil {
 		if err := e.RaftNode.ProposeAddJob(j); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return job.Job{}, fmt.Errorf("raft propose add_job_at failed: %w", err)
 		}
 	} else {
 		if err := e.JobStore.Add(j); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return job.Job{}, err
 		}
 		e.DelayQueue.Enqueue(j.ID)
 	}
 
+	span.SetAttributes(attribute.Int("job.id", j.ID))
+	span.SetStatus(codes.Ok, "")
 	return j, nil
 }
 
@@ -304,10 +348,32 @@ func (e *Engine) DeleteJob(id int) bool {
 }
 
 func (e *Engine) CancelJob(id int) error {
+	return e.CancelJobWithContext(context.Background(), id)
+}
+
+func (e *Engine) CancelJobWithContext(ctx context.Context, id int) error {
+	_, span := tracing.Tracer().Start(ctx, "engine.cancel_job")
+	defer span.End()
+
+	span.SetAttributes(attribute.Int("job.id", id))
+
 	if e.RaftNode != nil {
-		return e.RaftNode.ProposeCancelJob(id)
+		if err := e.RaftNode.ProposeCancelJob(id); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return err
+		}
+		span.SetStatus(codes.Ok, "")
+		return nil
 	}
-	return e.JobStore.Cancel(id)
+	if err := e.JobStore.Cancel(id); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	metrics.JobsCancelled.Inc()
+	span.SetStatus(codes.Ok, "")
+	return nil
 }
 
 func (e *Engine) DeadJobs() []job.Job {

@@ -65,10 +65,10 @@ func SubmitJobHandler(e *engine.Engine) http.HandlerFunc {
 				http.Error(w, "run_at must be in the future", http.StatusBadRequest)
 				return
 			}
-			created, err = e.SubmitJobAt(req.Type, req.Priority, runAt)
+			created, err = e.SubmitJobAtWithContext(r.Context(), req.Type, req.Priority, runAt)
 			status = "scheduled"
 		} else {
-			created, err = e.SubmitJob(req.Type, req.Priority)
+			created, err = e.SubmitJobWithContext(r.Context(), req.Type, req.Priority)
 		}
 
 		if err != nil {

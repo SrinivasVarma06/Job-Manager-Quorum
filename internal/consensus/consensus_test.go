@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,13 +15,26 @@ import (
 	"quorum/internal/store"
 )
 
+func getFreeRaftAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to get free port: %v", err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatalf("failed to close free-port listener: %v", err)
+	}
+	return addr
+}
+
 func TestRaftNodeSingleNodeCluster(t *testing.T) {
 	tempDir := t.TempDir()
 
 	memoryStore := store.NewMemoryStore()
 	fsm := consensus.NewFSM(memoryStore)
 
-	raftAddr := "127.0.0.1:18088"
+	raftAddr := getFreeRaftAddr(t)
 	dataDir := filepath.Join(tempDir, "raft")
 
 	rn, err := consensus.NewRaftNode("node1", raftAddr, fsm, dataDir)
@@ -79,7 +93,7 @@ func TestRaftDeleteJob(t *testing.T) {
 
 	rn, err := consensus.NewRaftNode(
 		"node1",
-		"127.0.0.1:18089",
+		getFreeRaftAddr(t),
 		fsm,
 		filepath.Join(tempDir, "raft"),
 	)
@@ -121,7 +135,7 @@ func TestRaftCancelJob(t *testing.T) {
 
 	rn, err := consensus.NewRaftNode(
 		"node1",
-		"127.0.0.1:18090",
+		getFreeRaftAddr(t),
 		fsm,
 		filepath.Join(tempDir, "raft"),
 	)
@@ -210,7 +224,7 @@ func TestRaftAddCron(t *testing.T) {
 
 	rn, err := consensus.NewRaftNode(
 		"node1",
-		"127.0.0.1:18091",
+		getFreeRaftAddr(t),
 		fsm,
 		filepath.Join(tempDir, "raft"),
 	)
@@ -254,7 +268,7 @@ func TestRaftDeleteCron(t *testing.T) {
 
 	rn, err := consensus.NewRaftNode(
 		"node1",
-		"127.0.0.1:18092",
+		getFreeRaftAddr(t),
 		fsm,
 		filepath.Join(tempDir, "raft"),
 	)

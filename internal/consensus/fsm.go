@@ -1,15 +1,22 @@
 package consensus
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 
-	"github.com/hashicorp/raft"
 	"quorum/internal/cron"
 	"quorum/internal/job"
+	"quorum/internal/metrics"
 	"quorum/internal/store"
+
+	"github.com/hashicorp/raft"
+	"quorum/internal/tracing"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type CommandType string
@@ -45,56 +52,130 @@ func NewFSM(s store.Store) *FSM {
 
 // Apply is called by Raft once a log entry is committed by a cluster quorum.
 func (f *FSM) Apply(l *raft.Log) interface{} {
+	ctx := context.Background()
+	_, span := tracing.Tracer().Start(ctx, "raft.apply")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.Int64("raft.index", int64(l.Index)),
+		attribute.Int64("raft.term", int64(l.Term)),
+	)
 	var cmd Command
 	if err := json.Unmarshal(l.Data, &cmd); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+
 		slog.Error("FSM unmarshal error", "error", err)
 		return fmt.Errorf("unmarshal command: %w", err)
 	}
-
+	span.SetAttributes(
+		attribute.String("command.type", string(cmd.Type)),
+	)
 	switch cmd.Type {
 	case CmdAddJob:
+		span.SetAttributes(
+			attribute.Int("job.id", cmd.Job.ID),
+			attribute.String("job.type", cmd.Job.Type),
+		)
+
 		if err := f.store.Add(cmd.Job); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			slog.Error("FSM failed AddJob", "job_id", cmd.Job.ID, "error", err)
 			return err
 		}
 		slog.Debug("FSM applied AddJob", "job_id", cmd.Job.ID)
+		span.SetStatus(codes.Ok, "")
 
 	case CmdUpdateJob:
+		span.SetAttributes(
+			attribute.Int("job.id", cmd.Job.ID),
+			attribute.String("job.type", cmd.Job.Type),
+		)
+
 		if err := f.store.Update(cmd.Job); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+
 			slog.Error("FSM failed UpdateJob", "job_id", cmd.Job.ID, "error", err)
 			return err
 		}
+
 		slog.Debug("FSM applied UpdateJob", "job_id", cmd.Job.ID)
+		span.SetStatus(codes.Ok, "")
 
 	case CmdDeleteJob:
+		span.SetAttributes(
+			attribute.Int("job.id", cmd.ID),
+		)
+
 		if _, err := f.store.Delete(cmd.ID); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+
 			slog.Error("FSM failed DeleteJob", "job_id", cmd.ID, "error", err)
 			return err
 		}
+
 		slog.Debug("FSM applied DeleteJob", "job_id", cmd.ID)
+		span.SetStatus(codes.Ok, "")
 
 	case CmdCancelJob:
+		span.SetAttributes(
+			attribute.Int("job.id", cmd.ID),
+		)
+
 		if err := f.store.Cancel(cmd.ID); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+
 			slog.Error("FSM failed CancelJob", "job_id", cmd.ID, "error", err)
 			return err
 		}
+
+		metrics.JobsCancelled.Inc()
+
 		slog.Debug("FSM applied CancelJob", "job_id", cmd.ID)
+		span.SetStatus(codes.Ok, "")
 
 	case CmdAddCronJob:
+		span.SetAttributes(
+			attribute.String("cron.id", cmd.Cron.ID),
+		)
+
 		if err := f.store.AddCron(cmd.Cron); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+
 			slog.Error("FSM failed AddCronJob", "cron_id", cmd.Cron.ID, "error", err)
 			return err
 		}
+
 		slog.Debug("FSM applied AddCronJob", "cron_id", cmd.Cron.ID)
+		span.SetStatus(codes.Ok, "")
 
 	case CmdDeleteCronJob:
+		span.SetAttributes(
+			attribute.String("cron.id", cmd.CronID),
+		)
+
 		if _, err := f.store.DeleteCron(cmd.CronID); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+
 			slog.Error("FSM failed DeleteCronJob", "cron_id", cmd.CronID, "error", err)
 			return err
 		}
+
 		slog.Debug("FSM applied DeleteCronJob", "cron_id", cmd.CronID)
+		span.SetStatus(codes.Ok, "")
 
 	default:
+		err := fmt.Errorf("unknown command type: %s", cmd.Type)
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+
 		slog.Warn("FSM unknown command type", "type", cmd.Type)
 	}
 

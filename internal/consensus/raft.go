@@ -1,6 +1,7 @@
 package consensus
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -8,9 +9,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/hashicorp/raft"
 	"quorum/internal/cron"
 	"quorum/internal/job"
+	"quorum/internal/tracing"
+
+	"github.com/hashicorp/raft"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type RaftNode struct {
@@ -131,26 +136,55 @@ func (rn *RaftNode) RemoveServer(id string) error {
 
 // Propose applies a command to the Raft cluster log.
 func (rn *RaftNode) Propose(cmd Command) error {
+	_, span := tracing.Tracer().Start(context.Background(), "raft.propose")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("command.type", string(cmd.Type)))
+	if cmd.Job.ID != 0 {
+		span.SetAttributes(attribute.Int("job.id", cmd.Job.ID))
+	}
+	if cmd.Job.Type != "" {
+		span.SetAttributes(attribute.String("job.type", cmd.Job.Type))
+	}
+	if cmd.ID != 0 {
+		span.SetAttributes(attribute.Int("job.id", cmd.ID))
+	}
+
 	if !rn.IsLeader() {
-		return fmt.Errorf("not leader, leader is %s", rn.LeaderAddr())
+		err := fmt.Errorf("not leader, leader is %s", rn.LeaderAddr())
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
 	}
 
 	data, err := json.Marshal(cmd)
 	if err != nil {
-		return fmt.Errorf("marshal command: %w", err)
+		wrapped := fmt.Errorf("marshal command: %w", err)
+		span.RecordError(wrapped)
+		span.SetStatus(codes.Error, wrapped.Error())
+		return wrapped
 	}
 
+	applyStart := time.Now()
 	future := rn.raft.Apply(data, 5*time.Second)
 	if err := future.Error(); err != nil {
-		return fmt.Errorf("raft apply error: %w", err)
+		wrapped := fmt.Errorf("raft apply error: %w", err)
+		span.SetAttributes(attribute.Float64("raft.apply_latency_ms", float64(time.Since(applyStart).Milliseconds())))
+		span.RecordError(wrapped)
+		span.SetStatus(codes.Error, wrapped.Error())
+		return wrapped
 	}
+	span.SetAttributes(attribute.Float64("raft.apply_latency_ms", float64(time.Since(applyStart).Milliseconds())))
 
 	if res := future.Response(); res != nil {
 		if err, ok := res.(error); ok {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			return err
 		}
 	}
 
+	span.SetStatus(codes.Ok, "")
 	return nil
 }
 

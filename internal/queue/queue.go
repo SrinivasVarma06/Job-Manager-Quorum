@@ -2,6 +2,7 @@ package queue
 
 import (
 	"container/heap"
+	"quorum/internal/metrics"
 	"quorum/internal/store"
 	"sync"
 )
@@ -29,6 +30,8 @@ func (q *JobQueue) Enqueue(id int) {
 	q.mu.Lock()
 	heap.Push(&q.heap, id)
 	q.mu.Unlock()
+	// Update queue depth metric
+	metrics.QueueDepth.Inc()
 	select {
 	case q.notify <- struct{}{}:
 	default:
@@ -42,6 +45,8 @@ func (q *JobQueue) Dequeue() (int, bool) {
 		return 0, false
 	}
 	id := heap.Pop(&q.heap).(int)
+	// Update queue depth metric
+	metrics.QueueDepth.Dec()
 	return id, true
 }
 

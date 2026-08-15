@@ -91,7 +91,9 @@ func main() {
 	mux.HandleFunc("/events", events.Global().HTTPHandler())
 
 	handler := middleware.RequestID(
-		middleware.Logging(mux),
+		middleware.Tracing(
+			middleware.Logging(mux),
+		),
 	)
 	server := &http.Server{
 		Addr:    ":8080",

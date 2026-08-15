@@ -186,6 +186,7 @@ func TestEngineRestoreScheduledJobsToDelayQueue(t *testing.T) {
 	cfg := config.Default()
 	cfg.StorageType = "bolt"
 	cfg.StoragePath = dbPath
+	cfg.RaftEnabled = false
 
 	e1, err := engine.New(cfg)
 	if err != nil {
@@ -232,6 +233,7 @@ func TestEngineRestoreCancelledJobsNotQueued(t *testing.T) {
 	cfg := config.Default()
 	cfg.StorageType = "bolt"
 	cfg.StoragePath = dbPath
+	cfg.RaftEnabled = false
 
 	bs, _ := store.NewBoltStore(dbPath)
 
@@ -265,6 +267,7 @@ func TestEngineRestoreCompletedJobsNotQueued(t *testing.T) {
 	cfg := config.Default()
 	cfg.StorageType = "bolt"
 	cfg.StoragePath = dbPath
+	cfg.RaftEnabled = false
 
 	bs, _ := store.NewBoltStore(dbPath)
 
@@ -298,6 +301,7 @@ func TestEngineRestoreFailedJobsNotQueued(t *testing.T) {
 	cfg := config.Default()
 	cfg.StorageType = "bolt"
 	cfg.StoragePath = dbPath
+	cfg.RaftEnabled = false
 
 	bs, _ := store.NewBoltStore(dbPath)
 
@@ -331,6 +335,7 @@ func TestEngineRestoreEmptyDatabase(t *testing.T) {
 	cfg := config.Default()
 	cfg.StorageType = "bolt"
 	cfg.StoragePath = dbPath
+	cfg.RaftEnabled = false
 
 	e, err := engine.New(cfg)
 	if err != nil {
@@ -354,6 +359,7 @@ func TestEngineMultipleRestarts(t *testing.T) {
 	cfg := config.Default()
 	cfg.StorageType = "bolt"
 	cfg.StoragePath = dbPath
+	cfg.RaftEnabled = false
 
 	e1, _ := engine.New(cfg)
 
@@ -388,6 +394,7 @@ func TestEngineCancelPersistsAcrossRestart(t *testing.T) {
 	cfg := config.Default()
 	cfg.StorageType = "bolt"
 	cfg.StoragePath = dbPath
+	cfg.RaftEnabled = false
 
 	e1, _ := engine.New(cfg)
 
@@ -422,6 +429,7 @@ func TestEngineDeletePersistsAcrossRestart(t *testing.T) {
 	cfg := config.Default()
 	cfg.StorageType = "bolt"
 	cfg.StoragePath = dbPath
+	cfg.RaftEnabled = false
 
 	e1, _ := engine.New(cfg)
 

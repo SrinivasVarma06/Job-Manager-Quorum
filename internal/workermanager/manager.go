@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"quorum/internal/broker"
+	"quorum/internal/metrics"
 	"quorum/internal/worker"
 )
 
@@ -59,6 +60,9 @@ func (m *Manager) Register(w worker.WorkerClient, address string, topics ...stri
 	}
 	m.mu.Unlock()
 
+	// Update active workers metric
+	metrics.ActiveWorkers.Inc()
+
 	m.Broker.RegisterWorker(w.ID(), topics)
 }
 
@@ -73,7 +77,14 @@ func (m *Manager) MakeAvailable(w worker.WorkerClient) {
 
 func (m *Manager) Remove(id int) {
 	m.mu.Lock()
-	delete(m.workers, id)
+	info, ok := m.workers[id]
+	if ok {
+		if info.Alive {
+			// Decrement active workers metric when removing an alive worker
+			metrics.ActiveWorkers.Dec()
+		}
+		delete(m.workers, id)
+	}
 	m.mu.Unlock()
 
 	m.Broker.UnregisterWorker(id)
@@ -130,8 +141,13 @@ func (m *Manager) Heartbeat(id int) {
 	if !ok {
 		return
 	}
+	wasAlive := info.Alive
 	info.LastHeartbeat = time.Now()
 	info.Alive = true
+	// If recovering from previously dead state, increment active workers metric
+	if !wasAlive {
+		metrics.ActiveWorkers.Inc()
+	}
 }
 
 // Monitor polls worker liveness every timeout/2 (or 100ms, whichever is
@@ -155,6 +171,8 @@ func (m *Manager) Monitor(ctx context.Context, timeout time.Duration) {
 				if time.Since(info.LastHeartbeat) > timeout {
 					if info.Alive {
 						info.Alive = false
+						// Decrement active workers metric on timeout
+						metrics.ActiveWorkers.Dec()
 						slog.Warn("Worker timed out", "worker_id", info.Client.ID())
 						select {
 						case m.DeadWorkers <- info.Client.ID():
