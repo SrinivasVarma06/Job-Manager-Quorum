@@ -84,7 +84,7 @@ func main() {
 	mux.HandleFunc("/cluster/nodes/", clusterHandler.NodeRoute)
 	mux.HandleFunc("/cluster/raft", clusterHandler.RaftStatus)
 	mux.HandleFunc("/cluster/failover-simulate", clusterHandler.FailoverSimulate)
-	mux.HandleFunc("/jobs/leases", clusterHandler.Leases)
+	mux.HandleFunc("GET /jobs/leases", clusterHandler.Leases)
 
 	// Observability & SSE Handlers
 	mux.HandleFunc("/metrics", handlers.MetricsHandler(e))
