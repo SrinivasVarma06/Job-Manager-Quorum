@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"quorum/internal/job"
 	"quorum/internal/oteltest"
@@ -28,7 +29,7 @@ func TestRunnerExecuteSuccessCreatesSpan(t *testing.T) {
 
 	<-results
 
-	span := findRunnerSpanByName(sr.Ended(), "runner.execute")
+	span := findRunnerSpanByName(sr, "runner.execute")
 	if span == nil {
 		t.Fatal("expected runner.execute span")
 	}
@@ -59,7 +60,7 @@ func TestRunnerExecuteFailureRecordsErrorSpan(t *testing.T) {
 
 	<-results
 
-	span := findRunnerSpanByName(sr.Ended(), "runner.execute")
+	span := findRunnerSpanByName(sr, "runner.execute")
 	if span == nil {
 		t.Fatal("expected runner.execute span")
 	}
@@ -89,7 +90,7 @@ func TestRunnerExecuteCancellationRecordsErrorSpan(t *testing.T) {
 
 	<-results
 
-	span := findRunnerSpanByName(sr.Ended(), "runner.execute")
+	span := findRunnerSpanByName(sr, "runner.execute")
 	if span == nil {
 		t.Fatal("expected runner.execute span")
 	}
@@ -98,11 +99,18 @@ func TestRunnerExecuteCancellationRecordsErrorSpan(t *testing.T) {
 	}
 }
 
-func findRunnerSpanByName(spans []sdktrace.ReadOnlySpan, name string) sdktrace.ReadOnlySpan {
-	for _, sp := range spans {
-		if sp.Name() == name {
-			return sp
+func findRunnerSpanByName(sr *tracetest.SpanRecorder, name string) sdktrace.ReadOnlySpan {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, sp := range sr.Ended() {
+			if sp.Name() == name {
+				return sp
+			}
 		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	return nil
 }

@@ -1,5 +1,7 @@
 # Quorum
 
+[![CI](https://github.com/SrinivasVarma06/Job-Manager-Quorum/actions/workflows/ci.yml/badge.svg)](https://github.com/SrinivasVarma06/Job-Manager-Quorum/actions/workflows/ci.yml)
+
 A distributed job orchestration platform written in Go — a from-scratch
 Temporal/Airflow-lite. Quorum schedules, executes, retries and observes background
 jobs across a fleet of worker processes, with Raft-backed leader election, a

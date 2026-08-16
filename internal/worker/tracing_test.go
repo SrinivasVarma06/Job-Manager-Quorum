@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"quorum/internal/job"
 	"quorum/internal/oteltest"
@@ -49,7 +50,7 @@ func TestWorkerJobLifecycleCreatesTracingSpans(t *testing.T) {
 	}
 
 	for _, name := range []string{"worker.receive_job", "worker.execute_job", "worker.complete_job"} {
-		span := findWorkerSpanByName(sr.Ended(), name)
+		span := findWorkerSpanByName(sr, name)
 		if span == nil {
 			t.Fatalf("expected %s span", name)
 		}
@@ -64,12 +65,12 @@ func TestWorkerJobLifecycleCreatesTracingSpans(t *testing.T) {
 		}
 	}
 
-	complete := findWorkerSpanByName(sr.Ended(), "worker.complete_job")
+	complete := findWorkerSpanByName(sr, "worker.complete_job")
 	if complete.Status().Code != codes.Ok {
 		t.Fatalf("expected Ok on complete span, got %v", complete.Status().Code)
 	}
 
-	execute := findWorkerSpanByName(sr.Ended(), "worker.execute_job")
+	execute := findWorkerSpanByName(sr, "worker.execute_job")
 	if !hasWorkerDuration(execute) {
 		t.Fatal("expected execution.duration_ms on execute span")
 	}
@@ -100,7 +101,7 @@ func TestWorkerFailureRecordsErrorSpans(t *testing.T) {
 
 	<-results
 
-	execute := findWorkerSpanByName(sr.Ended(), "worker.execute_job")
+	execute := findWorkerSpanByName(sr, "worker.execute_job")
 	if execute == nil {
 		t.Fatal("expected worker.execute_job span")
 	}
@@ -108,7 +109,7 @@ func TestWorkerFailureRecordsErrorSpans(t *testing.T) {
 		t.Fatalf("expected Error on execute span, got %v", execute.Status().Code)
 	}
 
-	complete := findWorkerSpanByName(sr.Ended(), "worker.complete_job")
+	complete := findWorkerSpanByName(sr, "worker.complete_job")
 	if complete == nil {
 		t.Fatal("expected worker.complete_job span")
 	}
@@ -117,11 +118,18 @@ func TestWorkerFailureRecordsErrorSpans(t *testing.T) {
 	}
 }
 
-func findWorkerSpanByName(spans []sdktrace.ReadOnlySpan, name string) sdktrace.ReadOnlySpan {
-	for _, sp := range spans {
-		if sp.Name() == name {
-			return sp
+func findWorkerSpanByName(sr *tracetest.SpanRecorder, name string) sdktrace.ReadOnlySpan {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, sp := range sr.Ended() {
+			if sp.Name() == name {
+				return sp
+			}
 		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	return nil
 }

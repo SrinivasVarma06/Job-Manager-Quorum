@@ -1,0 +1,18 @@
+# Binaries and build artifacts
+bin/
+dist/
+
+# Database and runtime files
+*.db
+*.log
+snapshot.json
+quorum.db
+jobs.log
+
+# Editor and IDE metadata
+.vscode/
+.idea/
+
+# Test and profiling artifacts
+coverage.out
+*.prof
