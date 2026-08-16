@@ -28,14 +28,15 @@ const (
 
 // Job represents the persistent definition and desired state of a unit of work in Quorum.
 type Job struct {
-	ID         int       `json:"id"`
-	Type       string    `json:"type"`
-	Priority   int       `json:"priority"`
-	Status     Status    `json:"status"`
-	RetryCount int       `json:"retry_count"`
-	MaxRetries int       `json:"max_retries"`
-	NextRunAt  time.Time `json:"next_run_at"`
-	LastError  string    `json:"last_error"`
+	ID             int       `json:"id"`
+	Type           string    `json:"type"`
+	Priority       int       `json:"priority"`
+	Status         Status    `json:"status"`
+	RetryCount     int       `json:"retry_count"`
+	MaxRetries     int       `json:"max_retries"`
+	NextRunAt      time.Time `json:"next_run_at"`
+	LastError      string    `json:"last_error"`
+	IdempotencyKey string    `json:"idempotency_key"`
 }
 
 func NewJob(id int, jobType string, priority int) Job {

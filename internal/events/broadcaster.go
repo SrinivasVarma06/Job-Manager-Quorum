@@ -11,14 +11,14 @@ import (
 type EventType string
 
 const (
-	EventWorkerRegistered EventType = "WORKER_REGISTERED"
-	EventWorkerEvicted    EventType = "WORKER_EVICTED"
-	EventJobSubmitted     EventType = "JOB_SUBMITTED"
-	EventLeaseGranted     EventType = "LEASE_GRANTED"
-	EventLeaseReleased    EventType = "LEASE_RELEASED"
-	EventLeaderChanged    EventType = "LEADER_CHANGED"
-	EventQueueRebuilt     EventType = "QUEUE_REBUILT"
-	EventDispatchResumed  EventType = "DISPATCH_RESUMED"
+	EventWorkerRegistered  EventType = "WORKER_REGISTERED"
+	EventWorkerEvicted     EventType = "WORKER_EVICTED"
+	EventJobSubmitted      EventType = "JOB_SUBMITTED"
+	EventLeaseGranted      EventType = "LEASE_GRANTED"
+	EventLeaseReleased     EventType = "LEASE_RELEASED"
+	EventLeaderChanged     EventType = "LEADER_CHANGED"
+	EventQueueRebuilt      EventType = "QUEUE_REBUILT"
+	EventDispatchResumed   EventType = "DISPATCH_RESUMED"
 	EventFailoverTriggered EventType = "FAILOVER_TRIGGERED"
 )
 

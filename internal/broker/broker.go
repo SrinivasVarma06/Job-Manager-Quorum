@@ -18,9 +18,9 @@ import (
 //   - Route pending jobs to compatible workers.
 //   - Enforce isolation between specialized worker pools.
 type Broker struct {
-	mu            sync.RWMutex
-	workerTopics  map[int]map[string]struct{} // workerID -> set of topics
-	workerIsAll   map[int]bool                // workerID -> supports all topics ("*")
+	mu           sync.RWMutex
+	workerTopics map[int]map[string]struct{} // workerID -> set of topics
+	workerIsAll  map[int]bool                // workerID -> supports all topics ("*")
 }
 
 // New creates a new, empty Broker instance.

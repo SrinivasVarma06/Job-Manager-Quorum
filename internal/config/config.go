@@ -3,26 +3,26 @@ package config
 import "time"
 
 type Config struct {
-	WorkerCount            int
-	WorkerID               int
-	HeartbeatTimeout       time.Duration
-	MaxRetries             int
-	MaxBackoff             time.Duration
-	ResultBuffer           int
-	WorkerExecutionTimeout time.Duration
-	DelayQueuePollInterval time.Duration
-	RateLimit              int
-	RateBurst              int
+	WorkerCount             int
+	WorkerID                int
+	HeartbeatTimeout        time.Duration
+	MaxRetries              int
+	MaxBackoff              time.Duration
+	ResultBuffer            int
+	WorkerExecutionTimeout  time.Duration
+	DelayQueuePollInterval  time.Duration
+	RateLimit               int
+	RateBurst               int
 	BreakerFailureThreshold int
 	BreakerResetTimeout     time.Duration
 	ControllerGRPCPort      int
 	WorkerGRPCPort          int
-	StorageType            string
-	StoragePath            string
-	RaftEnabled            bool
-	RaftNodeID             string
-	RaftAddr               string
-	RaftDataDir            string
+	StorageType             string
+	StoragePath             string
+	RaftEnabled             bool
+	RaftNodeID              string
+	RaftAddr                string
+	RaftDataDir             string
 }
 
 func Default() Config {

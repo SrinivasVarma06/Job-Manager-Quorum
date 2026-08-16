@@ -10,10 +10,12 @@ import (
 	"time"
 )
 
+// SubmitJobRequest is the JSON body for POST /jobs.
 type SubmitJobRequest struct {
-	Type     string `json:"type"`
-	Priority int    `json:"priority"`
-	RunAt    string `json:"run_at,omitempty"`
+	Type           string `json:"type"`
+	Priority       int    `json:"priority"`
+	RunAt          string `json:"run_at,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 func JobsHandler(e *engine.Engine) http.HandlerFunc {
@@ -30,6 +32,12 @@ func JobsHandler(e *engine.Engine) http.HandlerFunc {
 	}
 }
 
+// SubmitJobHandler handles POST /jobs.
+//
+// Idempotency behaviour:
+//   - First request with a given idempotency_key → 201 Created, new job.
+//   - Repeat request with the same key            → 200 OK, existing job (no duplicate created).
+//   - Request without a key                       → 201 Created, new job each time.
 func SubmitJobHandler(e *engine.Engine) http.HandlerFunc {
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -52,9 +60,9 @@ func SubmitJobHandler(e *engine.Engine) http.HandlerFunc {
 			http.Error(w, "priority must be >= 0", http.StatusBadRequest)
 			return
 		}
-		var created job.Job
-		status := "submitted"
 
+		// Scheduled jobs with an idempotency key are supported but deduplication
+		// only covers the initial submission; the key is stored on the job.
 		if strings.TrimSpace(req.RunAt) != "" {
 			runAt, parseErr := time.Parse(time.RFC3339, req.RunAt)
 			if parseErr != nil {
@@ -65,26 +73,49 @@ func SubmitJobHandler(e *engine.Engine) http.HandlerFunc {
 				http.Error(w, "run_at must be in the future", http.StatusBadRequest)
 				return
 			}
-			created, err = e.SubmitJobAtWithContext(r.Context(), req.Type, req.Priority, runAt)
-			status = "scheduled"
-		} else {
-			created, err = e.SubmitJobWithContext(r.Context(), req.Type, req.Priority)
+			created, err := e.SubmitJobAtWithContext(r.Context(), req.Type, req.Priority, runAt)
+			if err != nil {
+				http.Error(w, "Failed to submit job", http.StatusInternalServerError)
+				return
+			}
+			response := map[string]any{
+				"id":     created.ID,
+				"status": "scheduled",
+				"run_at": created.NextRunAt.Format(time.RFC3339),
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(response)
+			return
 		}
 
+		// Immediate job — may carry an idempotency key.
+		created, wasDuplicate, err := e.SubmitJobIdempotent(
+			r.Context(),
+			req.IdempotencyKey,
+			req.Type,
+			req.Priority,
+		)
 		if err != nil {
 			http.Error(w, "Failed to submit job", http.StatusInternalServerError)
 			return
 		}
+
 		response := map[string]any{
 			"id":     created.ID,
-			"status": status,
+			"status": "submitted",
 		}
-		if !created.NextRunAt.IsZero() {
-			response["run_at"] = created.NextRunAt.Format(time.RFC3339)
+		if created.IdempotencyKey != "" {
+			response["idempotency_key"] = created.IdempotencyKey
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
+		if wasDuplicate {
+			// Duplicate: return 200 OK with the existing job, not 201.
+			w.WriteHeader(http.StatusOK)
+		} else {
+			w.WriteHeader(http.StatusCreated)
+		}
 		json.NewEncoder(w).Encode(response)
 	}
 }
@@ -117,4 +148,21 @@ func GetJobHandler(e *engine.Engine) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(j)
 	}
+}
+
+// jobResponse builds the standard JSON representation of a job for HTTP responses.
+func jobResponse(j job.Job) map[string]any {
+	m := map[string]any{
+		"id":       j.ID,
+		"type":     j.Type,
+		"priority": j.Priority,
+		"status":   j.Status,
+	}
+	if j.IdempotencyKey != "" {
+		m["idempotency_key"] = j.IdempotencyKey
+	}
+	if !j.NextRunAt.IsZero() {
+		m["run_at"] = j.NextRunAt.Format(time.RFC3339)
+	}
+	return m
 }

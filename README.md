@@ -21,6 +21,7 @@ POST /jobs → Raft log → BoltDB → priority queue → lease → gRPC → wor
 - [Problem Statement](#problem-statement)
 - [Architecture Overview](#architecture-overview)
 - [Feature List](#feature-list)
+- [Delivery Guarantees](#delivery-guarantees)
 - [System Components](#system-components)
 - [Scheduling Lifecycle](#scheduling-lifecycle)
 - [Retry Lifecycle](#retry-lifecycle)
@@ -144,6 +145,70 @@ schedules a retry, or writes it to the DLQ.
 - Prometheus metrics at `/metrics`
 - OpenTelemetry tracing (OTLP/gRPC) spanning submit → schedule → execute
 - Server-sent events at `/events` and an embedded dashboard at `/ui`
+
+---
+
+## Delivery Guarantees
+
+Quorum provides **at-least-once execution** with **idempotent submission** via
+idempotency keys.
+
+### At-least-once execution
+
+Quorum's scheduler uses retries and ephemeral leases. A worker may:
+
+1. Acquire a lease and begin executing a job.
+2. Crash (or lose connectivity) before reporting completion.
+3. Cause the lease manager to detect the failure and re-enqueue the job.
+4. Have the job executed again by a different (or the same) worker.
+
+This means a job **may execute more than once**. Executors should be designed to
+be idempotent — applying the same operation twice produces the same result.
+
+### Idempotent submission via idempotency keys
+
+Duplicate *submissions* (client-side retries or network hiccups that replay the
+HTTP request) are deduplicated using an idempotency key. Pass
+`"idempotency_key"` in the JSON body:
+
+```bash
+# First request — creates a new job
+curl -X POST http://localhost:8080/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"type":"email","priority":5,"idempotency_key":"order-123-email"}'
+# → 201 Created
+# {"id":1,"status":"submitted","idempotency_key":"order-123-email"}
+
+# Second request with the same key — returns the original job, no duplicate
+curl -X POST http://localhost:8080/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"type":"email","priority":5,"idempotency_key":"order-123-email"}'
+# → 200 OK
+# {"id":1,"status":"submitted","idempotency_key":"order-123-email"}
+```
+
+**Behaviour contract:**
+
+| Scenario | HTTP status | Result |
+|---|---|---|
+| First request with key | `201 Created` | New job created |
+| Repeat request with same key | `200 OK` | Original job returned, no duplicate |
+| Request without a key | `201 Created` | New job every time |
+
+**Implementation details:**
+
+- The idempotency key is stored on the `job.Job` struct (`idempotency_key`
+  JSON field) and persisted through both the in-memory store and BoltDB.
+- MemoryStore maintains an in-memory `map[string]int` index (O(1) lookup,
+  protected by a read lock).
+- BoltStore maintains a dedicated `idempotency_keys` bucket (O(1) BoltDB
+  key lookup, no full-scan).
+- The engine serialises the check-then-create step under `submitMu` to prevent
+  a TOCTOU race between two concurrent requests with the same key.
+- WAL replay and Raft FSM snapshots are unaffected: they serialize the full
+  `job.Job` struct which already carries the key.
+- Jobs submitted **without** a key bypass deduplication entirely — each call
+  creates a new job as before (backward compatible).
 
 ---
 

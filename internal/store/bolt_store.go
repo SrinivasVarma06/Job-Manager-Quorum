@@ -15,6 +15,7 @@ var (
 	jobsBucket            = []byte("jobs")
 	cronBucket            = []byte("cron_jobs")
 	dlqBucket             = []byte("dlq")
+	idempotencyBucket     = []byte("idempotency_keys") // key → job ID (string)
 	statusPendingBucket   = []byte("status_pending")
 	statusScheduledBucket = []byte("status_scheduled")
 	statusCompletedBucket = []byte("status_completed")
@@ -25,14 +26,15 @@ var (
 // BoltStore is a persistent implementation of Store backed by bbolt (BoltDB).
 //
 // Buckets layout:
-//   - "jobs"             -> key: JobID -> val: JSON job
-//   - "cron_jobs"        -> key: CronID -> val: JSON cron job
-//   - "dlq"              -> key: JobID -> val: JSON job
-//   - "status_pending"   -> key: JobID -> val: nil
-//   - "status_scheduled" -> key: JobID -> val: nil
-//   - "status_completed" -> key: JobID -> val: nil
-//   - "status_failed"    -> key: JobID -> val: nil
-//   - "status_cancelled" -> key: JobID -> val: nil
+//   - "jobs"              -> key: JobID -> val: JSON job
+//   - "cron_jobs"         -> key: CronID -> val: JSON cron job
+//   - "dlq"               -> key: JobID -> val: JSON job
+//   - "idempotency_keys"  -> key: IdempotencyKey -> val: JobID (ASCII int)
+//   - "status_pending"    -> key: JobID -> val: nil
+//   - "status_scheduled"  -> key: JobID -> val: nil
+//   - "status_completed"  -> key: JobID -> val: nil
+//   - "status_failed"     -> key: JobID -> val: nil
+//   - "status_cancelled"  -> key: JobID -> val: nil
 type BoltStore struct {
 	db *bolt.DB
 }
@@ -48,6 +50,7 @@ func NewBoltStore(path string) (*BoltStore, error) {
 		jobsBucket,
 		cronBucket,
 		dlqBucket,
+		idempotencyBucket,
 		statusPendingBucket,
 		statusScheduledBucket,
 		statusCompletedBucket,
@@ -78,6 +81,15 @@ func (s *BoltStore) Add(j job.Job) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		if err := putJob(tx, j); err != nil {
 			return err
+		}
+		// Persist the idempotency key → job ID mapping atomically with the job.
+		if j.IdempotencyKey != "" {
+			if err := tx.Bucket(idempotencyBucket).Put(
+				[]byte(j.IdempotencyKey),
+				[]byte(strconv.Itoa(j.ID)),
+			); err != nil {
+				return fmt.Errorf("write idempotency key: %w", err)
+			}
 		}
 		return addToStatusBucket(tx, j.Status, j.ID)
 	})
@@ -179,6 +191,10 @@ func (s *BoltStore) Delete(id int) (bool, error) {
 		var j job.Job
 		if err := json.Unmarshal(v, &j); err == nil {
 			_ = removeFromStatusBucket(tx, j.Status, id)
+			// Remove idempotency key mapping if present.
+			if j.IdempotencyKey != "" {
+				_ = tx.Bucket(idempotencyBucket).Delete([]byte(j.IdempotencyKey))
+			}
 		}
 		return b.Delete(key(id))
 	})
@@ -275,6 +291,35 @@ func (s *BoltStore) ListDLQ() ([]job.Job, error) {
 		})
 	})
 	return dlqJobs, err
+}
+
+// FindByIdempotencyKey looks up an existing job by its idempotency key.
+// The lookup is O(1): it consults the dedicated "idempotency_keys" bucket.
+// Returns (zero, false) when the key is empty or not found.
+func (s *BoltStore) FindByIdempotencyKey(ikey string) (job.Job, bool) {
+	if ikey == "" {
+		return job.Job{}, false
+	}
+	var j job.Job
+	err := s.db.View(func(tx *bolt.Tx) error {
+		idBytes := tx.Bucket(idempotencyBucket).Get([]byte(ikey))
+		if idBytes == nil {
+			return errNotFound
+		}
+		id, err := strconv.Atoi(string(idBytes))
+		if err != nil {
+			return errNotFound
+		}
+		v := tx.Bucket(jobsBucket).Get(key(id))
+		if v == nil {
+			return errNotFound
+		}
+		return json.Unmarshal(v, &j)
+	})
+	if err != nil {
+		return job.Job{}, false
+	}
+	return j, true
 }
 
 func putJob(tx *bolt.Tx, j job.Job) error {

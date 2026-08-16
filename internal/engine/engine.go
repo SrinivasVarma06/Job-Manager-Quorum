@@ -39,6 +39,7 @@ type Engine struct {
 	CronScheduler *cron.Scheduler
 	WorkerManager *workermanager.Manager
 	nextJobID     atomic.Int64
+	submitMu      sync.Mutex // serializes idempotent check-then-create
 	JobStore      store.Store
 	DLQ           *dlq.DeadLetterQueue
 	Config        config.Config
@@ -328,6 +329,76 @@ func (e *Engine) SubmitJobAtWithContext(ctx context.Context, jobType string, pri
 	span.SetAttributes(attribute.Int("job.id", j.ID))
 	span.SetStatus(codes.Ok, "")
 	return j, nil
+}
+
+// SubmitJobIdempotent submits a job, deduplicating by idempotency key.
+//
+// If key is non-empty and an existing job with that key is found, the existing
+// job is returned immediately — no new ID, no WAL/Raft entry, no queue item.
+//
+// If key is empty the call behaves identically to SubmitJobWithContext.
+//
+// Race safety: submitMu serializes the FindByIdempotencyKey + Add pair so that
+// two concurrent requests with the same key cannot both observe "not found" and
+// both create a new job.
+func (e *Engine) SubmitJobIdempotent(
+	ctx context.Context,
+	key string,
+	jobType string,
+	priority int,
+) (job.Job, bool, error) {
+	if key == "" {
+		j, err := e.SubmitJobWithContext(ctx, jobType, priority)
+		return j, false, err
+	}
+
+	_, span := tracing.Tracer().Start(ctx, "engine.submit_job_idempotent")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("job.type", jobType),
+		attribute.Int("job.priority", priority),
+		attribute.String("job.idempotency_key", key),
+	)
+
+	e.submitMu.Lock()
+	defer e.submitMu.Unlock()
+
+	// Check: return existing job if key already seen.
+	if existing, found := e.JobStore.FindByIdempotencyKey(key); found {
+		span.SetAttributes(attribute.Int("job.id", existing.ID))
+		span.SetStatus(codes.Ok, "deduplicated")
+		return existing, true, nil // true == was a duplicate
+	}
+
+	// Create: new job with the idempotency key stamped on it.
+	id := int(e.nextJobID.Add(1))
+	j := job.NewJob(id, jobType, priority)
+	j.IdempotencyKey = key
+
+	if e.RaftNode != nil {
+		if err := e.RaftNode.ProposeAddJob(j); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return job.Job{}, false, fmt.Errorf("raft propose add_job (idempotent) failed: %w", err)
+		}
+	} else {
+		if err := e.JobStore.Add(j); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return job.Job{}, false, err
+		}
+		e.PriorityQueue.Enqueue(j.ID)
+	}
+
+	span.SetAttributes(attribute.Int("job.id", j.ID))
+	metrics.JobsSubmitted.Inc()
+	events.Global().Broadcast(events.Event{
+		Type:      events.EventJobSubmitted,
+		Message:   fmt.Sprintf("Job #%d (type: %s, priority: %d, key: %s) submitted to cluster", j.ID, j.Type, j.Priority, key),
+		Timestamp: time.Now(),
+	})
+	span.SetStatus(codes.Ok, "")
+	return j, false, nil
 }
 
 func (e *Engine) Jobs() []job.Job {

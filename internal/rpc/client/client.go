@@ -16,11 +16,11 @@ import (
 // control node. It handles registration, heartbeats, job submission
 // (when acting as a WorkerClient proxy), and result reporting.
 type Client struct {
-	id             int
-	workerAddr     string // address this worker listens on (sent during RegisterWorker)
-	topics         []string
-	conn           *grpc.ClientConn
-	client         workerpb.WorkerServiceClient
+	id         int
+	workerAddr string // address this worker listens on (sent during RegisterWorker)
+	topics     []string
+	conn       *grpc.ClientConn
+	client     workerpb.WorkerServiceClient
 }
 
 // New creates a Client for a worker node that needs to dial the control node.

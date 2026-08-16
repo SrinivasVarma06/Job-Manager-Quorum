@@ -40,4 +40,8 @@ type Store interface {
 	// DLQ persistence
 	AddDLQ(j job.Job) error
 	ListDLQ() ([]job.Job, error)
+
+	// FindByIdempotencyKey returns the existing job for the given key.
+	// Returns (zero, false) when the key is empty or not found.
+	FindByIdempotencyKey(key string) (job.Job, bool)
 }

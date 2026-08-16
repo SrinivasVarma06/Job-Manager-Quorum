@@ -9,21 +9,24 @@ import (
 	"quorum/internal/job"
 )
 
-// MemoryStore is an in-memory implementation of Store with O(k) secondary status indexing.
+// MemoryStore is an in-memory implementation of Store with O(k) secondary status indexing
+// and an O(1) idempotency-key index.
 type MemoryStore struct {
-	mu          sync.RWMutex
-	jobs        map[int]job.Job
-	statusIndex map[job.Status]map[int]struct{}
-	crons       map[string]cron.CronJob
-	dlq         map[int]job.Job
+	mu               sync.RWMutex
+	jobs             map[int]job.Job
+	statusIndex      map[job.Status]map[int]struct{}
+	crons            map[string]cron.CronJob
+	dlq              map[int]job.Job
+	idempotencyIndex map[string]int // idempotency key → job ID
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		jobs:        make(map[int]job.Job),
-		statusIndex: make(map[job.Status]map[int]struct{}),
-		crons:       make(map[string]cron.CronJob),
-		dlq:         make(map[int]job.Job),
+		jobs:             make(map[int]job.Job),
+		statusIndex:      make(map[job.Status]map[int]struct{}),
+		crons:            make(map[string]cron.CronJob),
+		dlq:              make(map[int]job.Job),
+		idempotencyIndex: make(map[string]int),
 	}
 }
 
@@ -36,6 +39,9 @@ func (s *MemoryStore) Add(j job.Job) error {
 	}
 
 	s.jobs[j.ID] = j
+	if j.IdempotencyKey != "" {
+		s.idempotencyIndex[j.IdempotencyKey] = j.ID
+	}
 	s.addToStatusIndex(j.Status, j.ID)
 	return nil
 }
@@ -106,6 +112,10 @@ func (s *MemoryStore) Delete(id int) (bool, error) {
 	}
 
 	s.removeFromStatusIndex(j.Status, id)
+	// Remove from idempotency index if present
+	if j.IdempotencyKey != "" {
+		delete(s.idempotencyIndex, j.IdempotencyKey)
+	}
 	delete(s.jobs, id)
 	return true, nil
 }
@@ -177,6 +187,24 @@ func (s *MemoryStore) ListDLQ() ([]job.Job, error) {
 		dlqJobs = append(dlqJobs, j)
 	}
 	return dlqJobs, nil
+}
+
+// FindByIdempotencyKey returns the job associated with key, if any.
+// Empty key always returns (zero, false) — bypassing deduplication.
+// This is O(1): it consults the in-memory index under a read-lock.
+func (s *MemoryStore) FindByIdempotencyKey(key string) (job.Job, bool) {
+	if key == "" {
+		return job.Job{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	id, ok := s.idempotencyIndex[key]
+	if !ok {
+		return job.Job{}, false
+	}
+	j, ok := s.jobs[id]
+	return j, ok
 }
 
 func (s *MemoryStore) addToStatusIndex(status job.Status, id int) {
