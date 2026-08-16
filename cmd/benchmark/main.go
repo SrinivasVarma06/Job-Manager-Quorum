@@ -1,13 +1,10 @@
 package main
 
 import (
-	"encoding/csv"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
 	"quorum/internal/benchmark"
@@ -15,198 +12,73 @@ import (
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelWarn,
+		Level: slog.LevelError,
 	})))
 
-	cfg := benchmark.BenchmarkConfig{
-		NumJobs:    1000,
-		NumWorkers: 10,
-		QueueSize:  2000,
-		JobType:    "benchmark",
-	}
+	fmt.Println("================================================================================")
+	fmt.Println("             QUORUM DISTRIBUTED ENGINE — SYSTEM BENCHMARK SUITE                 ")
+	fmt.Println("================================================================================")
 
-	result, err := benchmark.RunBenchmark(cfg)
+	// ---------------------------------------------------------------------------
+	// Experiment 1: 10,000-Job Crash Recovery Benchmark
+	// ---------------------------------------------------------------------------
+	fmt.Println("\n[Experiment 1] 10,000-Job Persistent Crash Recovery & State Reconstruction")
+	tempDir, err := os.MkdirTemp("", "quorum_bench_recovery_*")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "benchmark failed: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to create temp dir: %v\n", err)
 		os.Exit(1)
 	}
+	defer os.RemoveAll(tempDir)
 
-	printResult(result)
-
-	if err := os.MkdirAll("benchmarks", 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create benchmarks directory: %v\n", err)
-		os.Exit(1)
-	}
-
-	resultsCSV := filepath.Join("benchmarks", "results.csv")
-	if err := appendResultCSV(resultsCSV, result); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write results.csv: %v\n", err)
-		os.Exit(1)
-	}
-
-	resultsMD := filepath.Join("benchmarks", "results.md")
-	if err := generateMarkdownReport(resultsCSV, resultsMD); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write results.md: %v\n", err)
-		os.Exit(1)
-	}
-
-	scalingCSV := filepath.Join("benchmarks", "scaling.csv")
-	if err := runScalingMatrix(cfg, scalingCSV); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to write scaling.csv: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-func printResult(r *benchmark.BenchmarkResult) {
-	fmt.Printf("Workers: %d\n", r.NumWorkers)
-	fmt.Printf("Jobs: %d\n", r.NumJobs)
-	fmt.Printf("Duration: %s\n", r.TotalDuration.Round(time.Millisecond))
-	fmt.Printf("Throughput: %.2f jobs/sec\n", r.ThroughputJobsPerSec)
-	fmt.Printf("P50: %s\n", r.P50Latency.Round(time.Millisecond))
-	fmt.Printf("P95: %s\n", r.P95Latency.Round(time.Millisecond))
-	fmt.Printf("P99: %s\n", r.P99Latency.Round(time.Millisecond))
-	fmt.Printf("Success: %d\n", r.SuccessCount)
-	fmt.Printf("Failed: %d\n", r.FailureCount)
-}
-
-func appendResultCSV(path string, r *benchmark.BenchmarkResult) error {
-	writeHeader := false
-	if fi, err := os.Stat(path); err != nil {
-		if !os.IsNotExist(err) {
-			return err
-		}
-		writeHeader = true
-	} else if fi.Size() == 0 {
-		writeHeader = true
-	}
-
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	dbPath := filepath.Join(tempDir, "recovery_bench.db")
+	recRes, err := benchmark.RunRecoveryBenchmark(10000, "bolt", dbPath)
 	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
-	if writeHeader {
-		if err := w.Write([]string{
-			"workers",
-			"jobs",
-			"duration",
-			"throughput",
-			"p50",
-			"p95",
-			"p99",
-			"success",
-			"failure",
-			"timestamp",
-		}); err != nil {
-			return err
-		}
+		fmt.Fprintf(os.Stderr, "Recovery benchmark failed: %v\n", err)
+	} else {
+		fmt.Printf("  • Total Jobs Persisted:   %d jobs\n", recRes.JobCount)
+		fmt.Printf("  • Initial Storage Seed:   %s\n", recRes.SaveDuration.Round(time.Millisecond))
+		fmt.Printf("  • State Recovery & Queue: %s\n", recRes.RecoveryDuration.Round(time.Microsecond))
+		fmt.Printf("  • Recovery Throughput:    %.2f jobs/sec\n", recRes.JobsPerSecond)
 	}
 
-	return w.Write([]string{
-		strconv.Itoa(r.NumWorkers),
-		strconv.Itoa(r.NumJobs),
-		r.TotalDuration.String(),
-		fmt.Sprintf("%.4f", r.ThroughputJobsPerSec),
-		r.P50Latency.String(),
-		r.P95Latency.String(),
-		r.P99Latency.String(),
-		strconv.Itoa(r.SuccessCount),
-		strconv.Itoa(r.FailureCount),
-		time.Now().Format(time.RFC3339),
-	})
-}
-
-func generateMarkdownReport(csvPath, mdPath string) error {
-	f, err := os.Open(csvPath)
+	// ---------------------------------------------------------------------------
+	// Experiment 2: Worker Pool Scalability Matrix (1 -> 2 -> 4 -> 8 -> 16 workers)
+	// ---------------------------------------------------------------------------
+	fmt.Println("\n[Experiment 2] Worker Pool Scalability with Realistic CPU Workload (2KB / 15 SHA-256 rounds)")
+	workerMatrix := []int{1, 2, 4, 8, 16}
+	jobsPerRun := 500
+	scaleResults, err := benchmark.RunScalabilityBenchmark(jobsPerRun, workerMatrix)
 	if err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "Scalability benchmark failed: %v\n", err)
+	} else {
+		fmt.Printf("  %-10s | %-16s | %-12s | %-12s | %-10s\n", "Workers", "Throughput", "p50 Latency", "p95 Latency", "Speedup")
+		fmt.Println("  -----------+------------------+--------------+--------------+-----------")
+		for _, sr := range scaleResults {
+			fmt.Printf("  %-10d | %-12.2f ops/s | %-12s | %-12s | %-6.2fx\n",
+				sr.WorkerCount,
+				sr.Throughput,
+				sr.P50Latency.Round(time.Millisecond),
+				sr.P95Latency.Round(time.Millisecond),
+				sr.Speedup,
+			)
+		}
 	}
-	defer f.Close()
 
-	records, err := csv.NewReader(f).ReadAll()
+	// ---------------------------------------------------------------------------
+	// Experiment 3: Raft Leader Failover & Sub-Second Election Latency
+	// ---------------------------------------------------------------------------
+	fmt.Println("\n[Experiment 3] Raft 3-Node Cluster Consensus Failover")
+	failoverRes, err := benchmark.RunRaftFailoverBenchmark()
 	if err != nil {
-		return err
+		fmt.Fprintf(os.Stderr, "Failover benchmark failed: %v\n", err)
+	} else {
+		fmt.Printf("  • Cluster Size:       %d nodes\n", failoverRes.ClusterSize)
+		fmt.Printf("  • Terminated Leader:  %s\n", failoverRes.OriginalLeader)
+		fmt.Printf("  • New Leader Elected: %s\n", failoverRes.NewLeader)
+		fmt.Printf("  • Failover Duration:  %s\n", failoverRes.ElectionDuration.Round(time.Millisecond))
 	}
 
-	var b strings.Builder
-	b.WriteString("# Benchmark Results\n\n")
-	b.WriteString("| Workers | Jobs | Throughput | P50 | P95 | P99 |\n")
-	b.WriteString("|---:|---:|---:|---:|---:|---:|\n")
-
-	for i, row := range records {
-		if i == 0 {
-			continue
-		}
-		if len(row) < 7 {
-			continue
-		}
-		b.WriteString(fmt.Sprintf("| %s | %s | %s/sec | %s | %s | %s |\n",
-			row[0], row[1], row[3], row[4], row[5], row[6]))
-	}
-
-	return os.WriteFile(mdPath, []byte(b.String()), 0644)
-}
-
-func runScalingMatrix(base benchmark.BenchmarkConfig, outputCSV string) error {
-	matrixWorkers := []int{1, 5, 10, 25, 50, 100}
-	f, err := os.Create(outputCSV)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	w := csv.NewWriter(f)
-	defer w.Flush()
-
-	if err := w.Write([]string{
-		"workers",
-		"jobs",
-		"duration",
-		"throughput",
-		"p50",
-		"p95",
-		"p99",
-		"success",
-		"failure",
-		"timestamp",
-	}); err != nil {
-		return err
-	}
-
-	for _, workers := range matrixWorkers {
-		cfg := base
-		cfg.NumWorkers = workers
-		switch {
-		case workers == 1 && cfg.NumJobs > 20:
-			cfg.NumJobs = 20
-		case workers <= 5 && cfg.NumJobs > 100:
-			cfg.NumJobs = 100
-		case cfg.NumJobs > 200:
-			cfg.NumJobs = 200
-		}
-		res, runErr := benchmark.RunBenchmark(cfg)
-		if runErr != nil {
-			return fmt.Errorf("matrix workers=%d: %w", workers, runErr)
-		}
-		if err := w.Write([]string{
-			strconv.Itoa(res.NumWorkers),
-			strconv.Itoa(res.NumJobs),
-			res.TotalDuration.String(),
-			fmt.Sprintf("%.4f", res.ThroughputJobsPerSec),
-			res.P50Latency.String(),
-			res.P95Latency.String(),
-			res.P99Latency.String(),
-			strconv.Itoa(res.SuccessCount),
-			strconv.Itoa(res.FailureCount),
-			time.Now().Format(time.RFC3339),
-		}); err != nil {
-			return err
-		}
-	}
-
-	return nil
+	fmt.Println("\n================================================================================")
+	fmt.Println("                         BENCHMARK SUITE COMPLETE                               ")
+	fmt.Println("================================================================================")
 }
