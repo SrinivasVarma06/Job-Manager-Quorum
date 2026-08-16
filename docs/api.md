@@ -2,39 +2,68 @@
 
 Base URL: `http://localhost:8080` (control node).
 
-There is no authentication — do not expose this port publicly.
+## Authentication & Authorization (JWT + RBAC)
 
-All request and response bodies are JSON. Successful responses set
-`Content-Type: application/json`. Validation errors are returned by
-`http.Error`, i.e. a plain-text body with the message below and
-`Content-Type: text/plain; charset=utf-8`. Cluster endpoints that use
-`httpapi.WriteError` return `{"error":"..."}` instead; the difference is noted
-per endpoint.
+Quorum supports HMAC-SHA256 (HS256) JWT authentication with Role-Based Access Control (RBAC).
 
-Every request passes through `RequestID → Tracing → Logging` middleware, so each
-request is logged with a request ID and produces a trace span (`http.request`).
+To enable authentication on the control plane, set:
+```bash
+export QUORUM_AUTH_ENABLED=true
+export QUORUM_JWT_SECRET="your-256-bit-secret"
+```
 
-## Endpoint summary
+### Authorization Header
+Authenticated requests must pass a valid Bearer token:
+```http
+Authorization: Bearer <jwt-token>
+```
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/jobs` | Submit a job (optionally scheduled) |
-| `GET` | `/jobs` | List all jobs |
-| `GET` | `/jobs/{id}` | Fetch one job |
-| `DELETE` | `/jobs/{id}` | Cancel a job |
-| `GET` | `/jobs/leases` | Active execution leases |
-| `POST` | `/cron` | Create a recurring job |
-| `GET` | `/cron` | List recurring jobs |
-| `DELETE` | `/cron/{id}` | Delete a recurring job |
-| `GET` | `/cluster/status` | Aggregated cluster + job counts |
-| `GET` | `/cluster/nodes` | Registered worker nodes |
-| `DELETE` | `/cluster/nodes/{id}` | Evict a worker node |
-| `GET` | `/cluster/raft` | Raft leadership state |
-| `POST` | `/cluster/failover-simulate` | Broadcast a scripted failover demo |
-| `GET` | `/metrics` | Prometheus metrics |
-| `GET` | `/events` | Server-sent event stream |
-| `GET` | `/` | Service liveness JSON |
-| `GET` | `/ui` | Embedded dashboard |
+### Roles & Permission Matrix
+
+| Role | Permissions |
+|---|---|
+| **`admin`** | Full access to all endpoints (Job submission, cancellation, Cron management, node eviction, failover simulation, metrics, and cluster status). |
+| **`submitter`** | Create jobs (`POST /jobs`), cancel jobs (`DELETE /jobs/{id}`), and view jobs (`GET /jobs`, `GET /jobs/{id}`). |
+| **`viewer`** | Read-only access to jobs, cron schedules, cluster state, and metrics (`GET` endpoints). |
+
+### Endpoint Access Requirements
+
+| Method | Path | Required Role | Purpose |
+|---|---|---|---|
+| `POST` | `/jobs` | `submitter` or `admin` | Submit a job (optionally with idempotency key or schedule) |
+| `GET` | `/jobs` | `viewer`, `submitter`, or `admin` | List all jobs |
+| `GET` | `/jobs/{id}` | `viewer`, `submitter`, or `admin` | Fetch one job by ID |
+| `DELETE` | `/jobs/{id}` | `submitter` or `admin` | Cancel an active or pending job |
+| `GET` | `/jobs/leases` | `viewer`, `submitter`, or `admin` | Active execution leases |
+| `POST` | `/cron` | `admin` | Create a recurring cron job |
+| `GET` | `/cron` | `viewer`, `submitter`, or `admin` | List recurring cron jobs |
+| `DELETE` | `/cron/{id}` | `admin` | Delete a recurring cron job |
+| `GET` | `/cluster/status` | `viewer`, `submitter`, or `admin` | Aggregated cluster + job counts |
+| `GET` | `/cluster/nodes` | `viewer`, `submitter`, or `admin` | Registered worker nodes |
+| `DELETE` | `/cluster/nodes/{id}` | `admin` | Evict a worker node |
+| `GET` | `/cluster/raft` | `viewer`, `submitter`, or `admin` | Raft leadership state |
+| `POST` | `/cluster/failover-simulate` | `admin` | Broadcast a scripted failover demo |
+| `GET` | `/metrics` | Public / `viewer` | Prometheus metrics scrape |
+| `GET` | `/events` | Public / `viewer` | Server-sent event stream for UI |
+| `GET` | `/` | Public | Service liveness JSON |
+| `GET` | `/ui` | Public | Embedded UI dashboard |
+
+### Authentication Error Responses
+
+- **401 Unauthorized**: Missing, malformed, invalid signature, or expired JWT.
+  ```json
+  {
+    "error": "Unauthorized",
+    "message": "missing Authorization header"
+  }
+  ```
+- **403 Forbidden**: Token is valid, but the user's role is insufficient for the requested endpoint.
+  ```json
+  {
+    "error": "Forbidden",
+    "message": "insufficient permissions for this resource"
+  }
+  ```
 
 ---
 

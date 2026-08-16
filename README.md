@@ -148,6 +148,12 @@ schedules a retry, or writes it to the DLQ.
 - OpenTelemetry tracing (OTLP/gRPC) spanning submit → schedule → execute
 - Server-sent events at `/events` and an embedded dashboard at `/ui`
 
+**Security & Authorization**
+- HMAC-SHA256 (HS256) JWT authentication middleware (`Authorization: Bearer <token>`)
+- Role-Based Access Control (RBAC) supporting `admin`, `submitter`, and `viewer` roles
+- Configurable JWT secret via `QUORUM_JWT_SECRET` and optional enforcement via `QUORUM_AUTH_ENABLED`
+- Contextual user claims propagation (`user_id`, `role`, `exp`, `iat`)
+
 ---
 
 ## Delivery Guarantees

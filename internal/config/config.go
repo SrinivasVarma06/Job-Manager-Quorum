@@ -1,6 +1,9 @@
 package config
 
-import "time"
+import (
+	"os"
+	"time"
+)
 
 type Config struct {
 	WorkerCount             int
@@ -23,9 +26,23 @@ type Config struct {
 	RaftNodeID              string
 	RaftAddr                string
 	RaftDataDir             string
+	JWTSecret               string
+	AuthEnabled             bool
 }
 
 func Default() Config {
+	jwtSecret := "quorum-jwt-secret-key-change-in-production"
+	if v := os.Getenv("QUORUM_JWT_SECRET"); v != "" {
+		jwtSecret = v
+	} else if v := os.Getenv("JWT_SECRET"); v != "" {
+		jwtSecret = v
+	}
+
+	authEnabled := false
+	if v := os.Getenv("QUORUM_AUTH_ENABLED"); v == "true" || v == "1" {
+		authEnabled = true
+	}
+
 	return Config{
 		WorkerCount:             0, // 0 = distributed-only; set >0 for local in-process workers
 		WorkerID:                1,
@@ -47,5 +64,7 @@ func Default() Config {
 		RaftNodeID:              "node1",
 		RaftAddr:                "127.0.0.1:18088",
 		RaftDataDir:             "data/raft",
+		JWTSecret:               jwtSecret,
+		AuthEnabled:             authEnabled,
 	}
 }

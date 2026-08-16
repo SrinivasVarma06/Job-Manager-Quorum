@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 
+	"quorum/internal/auth"
 	"quorum/internal/config"
 	"quorum/internal/engine"
 	"quorum/internal/events"
@@ -58,6 +59,26 @@ func main() {
 
 	mux := http.NewServeMux()
 
+	// Authorizer middleware configured with the cluster JWT secret
+	authz := middleware.NewAuthorizer(e.Config.JWTSecret)
+
+	// Route wrappers enforcing RBAC when AuthEnabled is true
+	requireRoles := func(allowedRoles ...string) func(http.Handler) http.Handler {
+		if !e.Config.AuthEnabled {
+			return func(next http.Handler) http.Handler { return next }
+		}
+		return authz.RequireRoles(allowedRoles...)
+	}
+	requireSubmitter := func(h http.Handler) http.Handler {
+		return requireRoles(auth.RoleSubmitter, auth.RoleAdmin)(h)
+	}
+	requireViewer := func(h http.Handler) http.Handler {
+		return requireRoles(auth.RoleViewer, auth.RoleSubmitter, auth.RoleAdmin)(h)
+	}
+	requireAdmin := func(h http.Handler) http.Handler {
+		return requireRoles(auth.RoleAdmin)(h)
+	}
+
 	// Serve UI Dashboard static files embedded from web/
 	webSubFS, err := fs.Sub(webFiles, "web")
 	if err == nil {
@@ -77,21 +98,49 @@ func main() {
 		w.Write([]byte(`{"service":"quorum","status":"running"}`))
 	})
 
-	// Job Handlers
-	mux.HandleFunc("/jobs", handlers.JobsHandler(e))
-	mux.HandleFunc("GET /jobs/{id}", handlers.GetJobHandler(e))
-	mux.HandleFunc("DELETE /jobs/{id}", handlers.CancelJobHandler(e))
-	mux.HandleFunc("/cron", handlers.CronJobsHandler(e))
-	mux.HandleFunc("DELETE /cron/{id}", handlers.DeleteCronJobHandler(e))
+	// Job Handlers (Submitter / Admin for write/cancel, Viewer / Submitter / Admin for read)
+	jobsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			requireSubmitter(handlers.SubmitJobHandler(e)).ServeHTTP(w, r)
+		case http.MethodGet:
+			requireViewer(handlers.ListJobsHandler(e)).ServeHTTP(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.Handle("/jobs", jobsHandler)
+	mux.Handle("GET /jobs/{id}", requireViewer(handlers.GetJobHandler(e)))
+	mux.Handle("DELETE /jobs/{id}", requireSubmitter(handlers.CancelJobHandler(e)))
+
+	// Cron Handlers (Admin for create/delete, Viewer for list)
+	cronHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			requireAdmin(handlers.CreateCronJobHandler(e)).ServeHTTP(w, r)
+		case http.MethodGet:
+			requireViewer(handlers.ListCronJobsHandler(e)).ServeHTTP(w, r)
+		default:
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	mux.Handle("/cron", cronHandler)
+	mux.Handle("DELETE /cron/{id}", requireAdmin(handlers.DeleteCronJobHandler(e)))
 
 	// Cluster & Telemetry Handlers
 	clusterHandler := handlers.NewClusterHandler(e)
-	mux.HandleFunc("/cluster/status", clusterHandler.Status)
-	mux.HandleFunc("/cluster/nodes", clusterHandler.Nodes)
-	mux.HandleFunc("/cluster/nodes/", clusterHandler.NodeRoute)
-	mux.HandleFunc("/cluster/raft", clusterHandler.RaftStatus)
-	mux.HandleFunc("/cluster/failover-simulate", clusterHandler.FailoverSimulate)
-	mux.HandleFunc("GET /jobs/leases", clusterHandler.Leases)
+	mux.Handle("/cluster/status", requireViewer(http.HandlerFunc(clusterHandler.Status)))
+	mux.Handle("/cluster/nodes", requireViewer(http.HandlerFunc(clusterHandler.Nodes)))
+	mux.Handle("/cluster/nodes/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			requireAdmin(http.HandlerFunc(clusterHandler.NodeRoute)).ServeHTTP(w, r)
+		} else {
+			requireViewer(http.HandlerFunc(clusterHandler.NodeRoute)).ServeHTTP(w, r)
+		}
+	}))
+	mux.Handle("/cluster/raft", requireViewer(http.HandlerFunc(clusterHandler.RaftStatus)))
+	mux.Handle("/cluster/failover-simulate", requireAdmin(http.HandlerFunc(clusterHandler.FailoverSimulate)))
+	mux.Handle("GET /jobs/leases", requireViewer(http.HandlerFunc(clusterHandler.Leases)))
 
 	// Observability & SSE Handlers
 	mux.HandleFunc("/metrics", handlers.MetricsHandler(e))
