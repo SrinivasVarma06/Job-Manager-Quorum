@@ -14,6 +14,7 @@ import (
 	"quorum/internal/handlers"
 	"quorum/internal/middleware"
 	rpcserver "quorum/internal/rpc/server"
+	"quorum/internal/tracing"
 )
 
 //go:embed web/*
@@ -23,6 +24,12 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})))
+
+	if shutdown, err := tracing.Init("quorum-server"); err == nil {
+		defer shutdown()
+	} else {
+		slog.Warn("Tracing initialization failed, continuing with fallback tracer", "error", err)
+	}
 
 	cfg := config.Default()
 	e, err := engine.New(cfg)

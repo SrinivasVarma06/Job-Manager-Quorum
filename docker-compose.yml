@@ -1,6 +1,9 @@
 version: '3.8'
 
 services:
+  # ---------------------------------------------------------------------------
+  # Control Plane Nodes (Raft Cluster)
+  # ---------------------------------------------------------------------------
   node-1:
     build: .
     container_name: quorum-node-1
@@ -11,12 +14,15 @@ services:
       - RAFT_DATA_DIR=/app/data/node-1
       - CONTROLLER_GRPC_PORT=50051
       - STORAGE_PATH=/app/data/node-1/quorum.db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
     ports:
       - "8080:8080"
       - "50051:50051"
       - "18088:18088"
     volumes:
       - node1_data:/app/data
+    depends_on:
+      - jaeger
 
   node-2:
     build: .
@@ -28,12 +34,15 @@ services:
       - RAFT_DATA_DIR=/app/data/node-2
       - CONTROLLER_GRPC_PORT=50051
       - STORAGE_PATH=/app/data/node-2/quorum.db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
     ports:
       - "8081:8080"
       - "50052:50051"
       - "18089:18088"
     volumes:
       - node2_data:/app/data
+    depends_on:
+      - jaeger
 
   node-3:
     build: .
@@ -45,28 +54,100 @@ services:
       - RAFT_DATA_DIR=/app/data/node-3
       - CONTROLLER_GRPC_PORT=50051
       - STORAGE_PATH=/app/data/node-3/quorum.db
+      - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
     ports:
       - "8082:8080"
       - "50053:50051"
       - "18090:18088"
     volumes:
       - node3_data:/app/data
+    depends_on:
+      - jaeger
 
+  # ---------------------------------------------------------------------------
+  # Distributed Worker Fleet
+  # ---------------------------------------------------------------------------
   worker-1:
     build: .
     container_name: quorum-worker-1
-    command: /app/quorum-worker -id=1 -controller=node-1:50051 -topics=email,video_processing
+    command: /app/quorum-worker
+    environment:
+      - QUORUM_WORKER_ID=1
+      - QUORUM_CONTROLLER_ADDR=node-1:50051
+      - QUORUM_WORKER_TOPICS=email,video_processing
+      - QUORUM_METRICS_PORT=9090
+      - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
+    ports:
+      - "9091:9090"
     depends_on:
       - node-1
+      - jaeger
 
   worker-2:
     build: .
     container_name: quorum-worker-2
-    command: /app/quorum-worker -id=2 -controller=node-1:50051 -topics=*
+    command: /app/quorum-worker
+    environment:
+      - QUORUM_WORKER_ID=2
+      - QUORUM_CONTROLLER_ADDR=node-1:50051
+      - QUORUM_WORKER_TOPICS=*
+      - QUORUM_METRICS_PORT=9090
+      - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
+    ports:
+      - "9092:9090"
     depends_on:
       - node-1
+      - jaeger
+
+  # ---------------------------------------------------------------------------
+  # Observability Stack (Prometheus, Grafana, Jaeger)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.50.1
+    container_name: quorum-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - node-1
+
+  grafana:
+    image: grafana/grafana:10.3.3
+    container_name: quorum-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    container_name: quorum-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # Web UI
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
 
 volumes:
   node1_data:
   node2_data:
   node3_data:
+  prometheus_data:
+  grafana_data:

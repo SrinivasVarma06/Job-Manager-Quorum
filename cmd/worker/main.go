@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -12,9 +13,11 @@ import (
 	"quorum/internal/config"
 	"quorum/internal/executor"
 	"quorum/internal/job"
+	"quorum/internal/metrics"
 	rpcclient "quorum/internal/rpc/client"
 	rpcserver "quorum/internal/rpc/server"
 	"quorum/internal/runner"
+	"quorum/internal/tracing"
 )
 
 func main() {
@@ -36,6 +39,32 @@ func main() {
 			log.Fatalf("invalid QUORUM_WORKER_ID %q: %v", v, err)
 		}
 	}
+
+	if shutdown, err := tracing.Init(fmt.Sprintf("quorum-worker-%d", workerID)); err == nil {
+		defer shutdown()
+	} else {
+		slog.Warn("Tracing initialization failed, continuing with fallback tracer", "error", err)
+	}
+
+	// Start HTTP server for Prometheus metrics scraping.
+	metricsPort := 9090
+	if v := os.Getenv("QUORUM_METRICS_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil {
+			metricsPort = p
+		}
+	}
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", metrics.Handler())
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(fmt.Sprintf(`{"service":"quorum-worker","worker_id":%d,"status":"running"}`, workerID)))
+		})
+		slog.Info("Worker metrics HTTP server listening", "port", metricsPort)
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", metricsPort), mux); err != nil && err != http.ErrServerClosed {
+			slog.Warn("Worker metrics HTTP server error", "error", err)
+		}
+	}()
 
 	// Worker port can also be overridden via QUORUM_WORKER_PORT.
 	workerPort := cfg.WorkerGRPCPort
@@ -88,7 +117,14 @@ func main() {
 	}()
 
 	workerAddr := fmt.Sprintf("localhost:%d", workerPort)
+	if v := os.Getenv("QUORUM_WORKER_ADDR"); v != "" {
+		workerAddr = v
+	}
+
 	controllerAddr := fmt.Sprintf("localhost:%d", cfg.ControllerGRPCPort)
+	if v := os.Getenv("QUORUM_CONTROLLER_ADDR"); v != "" {
+		controllerAddr = v
+	}
 
 	// gRPC client: connects to the control node for registration and heartbeats.
 	controller, err := rpcclient.New(workerID, workerAddr, controllerAddr, topics...)

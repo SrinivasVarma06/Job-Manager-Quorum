@@ -574,6 +574,7 @@ Full phase-by-phase plan: [`docs/roadmap.md`](docs/roadmap.md).
 | [`docs/quickstart.md`](docs/quickstart.md) | Five-minute end-to-end walkthrough |
 | [`docs/api.md`](docs/api.md) | HTTP API reference with examples |
 | [`docs/deployment.md`](docs/deployment.md) | Single-node, Compose, cluster, recovery |
+| [`docs/observability.md`](docs/observability.md) | Prometheus, Grafana, Jaeger deployment & dashboards |
 | [`docs/architecture.md`](docs/architecture.md) | Deeper architecture notes |
 | [`docs/adr/`](docs/adr/) | Architecture decision records |
 | [`docs/handbook/`](docs/handbook/) | Go and distributed-systems study notes |
